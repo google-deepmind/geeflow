@@ -1,0 +1,82 @@
+[project]
+# Project metadata. Available keys are documented at:
+# https://packaging.python.org/en/latest/specifications/declaring-project-metadata
+name = "geeflow"
+description = "Geospatial data processing and datasets generation library."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name="DeepMind Technologies Limited"}]
+classifiers = [  # List of https://pypi.org/classifiers/
+    "License :: OSI Approved :: Apache Software License",
+    "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+]
+keywords = []
+
+# pip dependencies of the project
+# Installed locally with `pip install -e .`
+dependencies = [
+    "absl-py",
+    "apache-beam[gcp]",
+    "dataclasses-json",
+    "earthengine-api",
+    "jax",
+    "matplotlib",
+    "ml_collections",
+    "numpy",
+    "pandas",
+    "python-dateutil",
+    "shapely",
+    "tensorflow",
+    "tensorflow_datasets",
+    "utm",
+]
+
+# `version` is automatically set by flit to use `jeo.__version__`
+dynamic = ["version"]
+
+[project.urls]
+homepage = "https://github.com/google-deepmind/geeflow"
+repository = "https://github.com/google-deepmind/geeflow"
+changelog = "https://github.com/google-deepmind/geeflow/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+# Installed through `pip install -e .[dev]`
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "pylint>=2.6.0",
+    "pyink",
+]
+
+# Installed through `pip install '.[docs]'`.
+docs = [
+    # Install `apitree` with all extensions (sphinx, theme,...)
+    "sphinx-apitree[ext]",
+]
+
+[tool.pyink]
+# Formatting configuration to follow Google style-guide
+line-length = 80
+unstable = true
+pyink-indentation = 2
+pyink-use-majority-quotes = true
+
+[build-system]
+# Build system specify which backend is used to build/install the project (flit,
+# poetry, setuptools,...). All backends are supported by `pip install`
+requires = ["flit_core >=3.8,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.flit.sdist]
+# Flit specific options (files to exclude from the PyPI package).
+# If using another build backend (setuptools, poetry), you can remove this
+# section.
+exclude = [
+  # Do not release tests files on PyPI.
+  "**/*_test.py",
+]

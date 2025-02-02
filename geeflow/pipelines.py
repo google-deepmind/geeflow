@@ -14,11 +14,11 @@
 
 """Pipelines for processing EE Geo data."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import io
 import os
 import tempfile
-from typing import Any, Callable
+from typing import Any
 
 # pylint: disable=g-long-lambda
 from absl import logging

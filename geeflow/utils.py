@@ -14,9 +14,10 @@
 
 """Utils."""
 
+from collections.abc import Callable
 import math
 import os
-from typing import Any, Callable
+from typing import Any
 
 from absl import logging
 import jax

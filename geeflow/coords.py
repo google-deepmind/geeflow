@@ -14,8 +14,8 @@
 
 """Working with coordinates."""
 
+from collections.abc import Sequence
 import dataclasses
-from typing import Sequence
 
 import numpy as np
 import shapely.geometry

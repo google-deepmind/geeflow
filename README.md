@@ -249,7 +249,7 @@ export EE_PROJECT="YOUR_GCP_PROJECT_ID"
 python -m geeflow.export_beam_tfds \
 --config_path=configs/public/demo.py:labels_path=data/demo_labels.csv,num=20 \
 --tfds_name=demo:1.0.0 --output_dir=$OUTDIR --logtostderr --running_mode=direct \
---splits=train,val,test --ee_project=$EE_PROJECT -- \
+--splits=train,val,test --ee_project=$EE_PROJECT --file_format="tfrecord" -- \
 --direct_num_workers=4 --direct_running_mode=multi_threading
 ```
 

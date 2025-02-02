@@ -14,7 +14,7 @@
 
 """EarthEngine algorithms for data pipelines."""
 
-from typing import Callable
+from collections.abc import Callable
 
 from geeflow import times
 import ml_collections

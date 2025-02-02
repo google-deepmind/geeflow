@@ -14,9 +14,10 @@
 
 """Stats computation utils for Beam pipelines."""
 
+from collections.abc import Iterable, Iterator
 import functools
 import hashlib
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any
 
 import apache_beam as beam
 from geeflow.stats import stats_util
@@ -109,7 +110,7 @@ def write(
     output_dir: str,
     # NOTE: For some unknown reason, doing "split: str | None = None" makes
     # beam fail. So be careful when changing this.
-    split: Optional[str] = None
+    split: str | None = None
 ) -> None:
   """Write stats."""
   (name, group_id), acc = example

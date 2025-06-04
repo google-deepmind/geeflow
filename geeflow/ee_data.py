@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -542,6 +542,9 @@ class Hansen(EeData):
 
   @property
   def asset_name(self) -> str:
+    # TODO: Update/remove this when the data is properly published.
+    if self.mode == "2024":
+      return "projects/glad/GFC/2024/global_forest_change_2024_v1_12_merged"
     return "UMD/hansen/global_forest_change_" + self.mode
 
 
@@ -977,10 +980,23 @@ class CustomFC(EeDataFC):
     c.gedi.select = ["canopy_height"]
     c.gedi.scale = 10
     c.gedi.algo = ee_algo.fc_to_image
+
+  Attributes:
+    asset_name: A name or a list of names of the assets to load.
+    filters: A list of filters to apply to the asset.
+    buffer_points: How many meters to buffer the point features.
+    use_bounds: Whether to use bounds instead of actual geometries.
+    set_property: A tuple of (property_name, property_value) to set on the
+      features.
   """
   asset_name: list[str] | str = ""  # Needs to be specified.
   filters: list[tuple[str, Any]] | None = None
   buffer_points: int = 0
+  # NOTE: Currently ".bounds" methiod is very slow and could incurr very
+  # significant slowdown. For more context, see:
+  # (internal link)
+  # Only use on small collections.
+  use_bounds: bool = False
   set_property: tuple[str, Any] | None = None
 
   @property
@@ -1020,6 +1036,8 @@ class CustomFC(EeDataFC):
       fc_points = fc.filter(ee.Filter.hasType(".geo", "Point"))
       fc_not_points = fc.filter(ee.Filter.hasType(".geo", "Point").Not())
       fc_points = fc_points.map(lambda x: x.buffer(self.buffer_points))
+      if self.use_bounds:
+        fc_points = fc_points.map(lambda x: x.bounds())
       fc = ee.FeatureCollection([fc_points, fc_not_points]).flatten()
     if self.set_property:
       fc = fc.map(lambda x: x.set(self.set_property[0], self.set_property[1]))

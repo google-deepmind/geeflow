@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,9 +108,7 @@ def aggregate(
 def write(
     example: tuple[tuple[str, int], stats_util.StatsAccumulator],
     output_dir: str,
-    # NOTE: For some unknown reason, doing "split: str | None = None" makes
-    # beam fail. So be careful when changing this.
-    split: str | None = None
+    split: str,
 ) -> None:
   """Write stats."""
   (name, group_id), acc = example

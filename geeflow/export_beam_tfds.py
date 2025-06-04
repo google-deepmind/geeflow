@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ from absl import flags
 from absl import logging
 import apache_beam as beam
 from geeflow import coords
+from geeflow import ee_algo
 from geeflow import ee_export_utils
 from geeflow import pipelines
 from geeflow import times
@@ -47,9 +48,6 @@ flags.DEFINE_string(
     "ee_project",
     "computing-engine-190414:earth-engine@computing-engine-190414.iam.gserviceaccount.com",
     "A ':' contatenation of a GCP project and a EE service account.")
-flags.DEFINE_integer("ee_feature_group_size", 10,
-                     ("How many features to group in a single FeatureCollection"
-                      " to decrease the number of getInfo calls to EE."))
 flags.DEFINE_string("output_dir", "", "Output directory")
 flags.DEFINE_string("tfds_name", "", "TFDS name, builder config name and "
                     "version (`name[/builder_config_name][:version]`).")
@@ -58,6 +56,8 @@ flags.DEFINE_string("split_column_name", "split", "Column to use for a split.")
 flags.DEFINE_integer("splits_s2_cell_level", 9, "S2 level for random splits.")
 flags.DEFINE_string("file_format", "array_record",
                     "The format for the dataset files")
+flags.DEFINE_bool("nondeterministic_order", False,
+                  "DownloadConfig.nondeterministic_order feature.")
 flags.DEFINE_enum(
     "running_mode",
     "direct",
@@ -93,6 +93,9 @@ class CreateData(beam.DoFn):
     if self.split != "full":
       def _filter_example(ex):
         if FLAGS.split_column_name in ex:
+          # Allow validation examples to be in either "val" or "validation".
+          if self.split in ["val", "validation"]:
+            return ex[FLAGS.split_column_name] in ["val", "validation"]
           return ex[FLAGS.split_column_name] == self.split
         else:
           # Compute s2-cell patch id (int64)
@@ -102,7 +105,7 @@ class CreateData(beam.DoFn):
           s2hash = int(hashlib.md5(str(s2c).encode("utf-8")).hexdigest(), 16)
           if self.split == "test" and s2hash % 10 == 9:
             return True
-          elif self.split == "val" and s2hash % 10 == 8:
+          elif self.split in ["val", "validation"] and s2hash % 10 == 8:
             return True
           elif self.split == "train" and s2hash % 10 not in {8, 9}:
             return True
@@ -113,11 +116,7 @@ class CreateData(beam.DoFn):
       raise ValueError(f"No examples identified for split `{self.split}` "
                        f"(full labels pd.DataFrame shape: {df.shape}). "
                        "Possibly due to random geographic sampling.")
-    num_groups = (len(label_items) + FLAGS.ee_feature_group_size - 1
-                  ) // FLAGS.ee_feature_group_size
-    for i in range(num_groups):
-      yield label_items[i * FLAGS.ee_feature_group_size :
-                        (i + 1) * FLAGS.ee_feature_group_size]
+    return label_items
 
 
 def _has_forest_loss(feature):
@@ -222,6 +221,7 @@ def apply_transforms(feature, config, cropped_features_counter=None):
         s = image_width // scale
       else:
         s = math.ceil(image_width / scale)
+
     for sub_key in [key, f"{key}_mask"]:
       data = np.array(feature[sub_key])
       # The expected data format is [H, W, C] or [T, H, W, C]. Even if C==1.
@@ -242,7 +242,8 @@ def apply_transforms(feature, config, cropped_features_counter=None):
 
 def _process_example(x, config):
   """Process a single example."""
-  x.pop("split", None)
+  for k in config.get("skip_keys", []) + ["split"]:
+    x.pop(k, None)
   out = {}
   for k, v in x.items():
     dtype = None
@@ -267,8 +268,43 @@ def _process_example(x, config):
     else:
       # Keep scalars as they are.
       out[k] = v
-  key = f"{x['id']}"
+  tfds_id_keys = config.labels.get("tfds_id_keys", ("id",))
+  key = "-".join(map(str, (x[k] for k in tfds_id_keys)))
   return (key, out)
+
+
+def _get_metadata_keys(config: ml_collections.ConfigDict) -> list[str]:
+  """Returns a list of metadata keys to be exported."""
+  ee_algos_with_ts = [
+      ee_algo.ic_sample,
+      ee_algo.rgb_ic_sample,
+      ee_algo.ic_sample_date_ranges,
+  ]
+
+  metadata_keys = []
+  for name, cfg in config.sources.items():
+    source_ee_algo = cfg.get("algo") or pipelines.ALGO_MAP.get(
+        cfg.get("module")
+    )
+    # Algorithms that always returns timestamps.
+    if source_ee_algo in ee_algos_with_ts:
+      metadata_keys.append(f"{name}_timestamps")
+    # Additional properties requested.
+    if additional_properties := cfg.get("sampling_kw", {}).get(
+        "additional_properties"
+    ):
+      metadata_keys += [f"{name}_{p}" for p in additional_properties]
+  return metadata_keys
+
+
+def _is_time_varying_algo(
+    config: ml_collections.ConfigDict, name: str
+) -> bool:
+  """Returns True if the given source is time varying."""
+  cfg = config.sources.get(name, {})
+  source_ee_algo = cfg.get("algo")
+  default_ee_algo = pipelines.ALGO_MAP.get(cfg.get("module"))
+  return (source_ee_algo or default_ee_algo) == ee_algo.ic_sample
 
 
 def get_split_tuples(splits):
@@ -288,15 +324,29 @@ class TFDSBuilder(tfds.core.GeneratorBasedBuilder):
   """DatasetBuilder."""
 
   def __init__(self, config, name, data_dir, splits):
+    for k in config.sources:
+      if k.endswith("_mask"):
+        raise ValueError(
+            f"Sources must not end with the reserved postfix `_mask`: {k}"
+        )
+
     self.config = config
-    self.num_get_info_calls = beam.metrics.Metrics.counter(
-        self.__class__, "num_get_info_calls")
+    self.num_query_calls = beam.metrics.Metrics.counter(
+        self.__class__, "num_query_calls")
+    self.num_items_processed = beam.metrics.Metrics.counter(
+        self.__class__, "num_items_processed")
     self.num_cropped_features = beam.metrics.Metrics.counter(
         self.__class__, "num_cropped_features")
-    self.num_get_info_failures = beam.metrics.Metrics.counter(
-        self.__class__, "num_get_info_failures")
-    self.getinfo_duration_distribution = beam.metrics.Metrics.distribution(
-        self.__class__, "getinfo_duration_distribution")
+    self.num_query_failures = beam.metrics.Metrics.counter(
+        self.__class__, "num_query_failures")
+    self.num_query_retries = beam.metrics.Metrics.counter(
+        self.__class__, "num_query_retries")
+    self.query_duration_distribution = beam.metrics.Metrics.distribution(
+        self.__class__, "query_duration_distribution")
+    self.query_bytes_distribution = beam.metrics.Metrics.distribution(
+        self.__class__, "query_bytes_distribution")
+    self.query_sleep_distribution = beam.metrics.Metrics.distribution(
+        self.__class__, "query_sleep_distribution")
     self.splits = splits
     # Set name and VERSION and BUILDER_CONFIG before parent initialization.
     version = "0.0.1"  # Setting a version is required.
@@ -323,28 +373,35 @@ class TFDSBuilder(tfds.core.GeneratorBasedBuilder):
       return {split: self._generate_examples(split_name)
               for (split, split_name) in get_split_tuples(self.splits)}
     else:
-      return {
-          "full": self._generate_examples("full"),
-      }
+      return {"full": self._generate_examples("full")}
 
   def _generate_examples(self, split):
     """Generate examples as dicts."""
     paths = tf.io.gfile.glob(
         self.config.labels.path.replace(SPLIT_PLACEHOLDER, split))
-    return (
+    tfds_pipe = (
         "Dummy create" >> beam.Create(paths)
         | "Create EE data" >> beam.ParDo(CreateData(self.config, split))
         | "Reshuffle after create data" >> beam.Reshuffle()
         | "Convert & get info" >> beam.ParDo(ee_export_utils.GetInfo(
             FLAGS.ee_project,
             self.config,
-            self.num_get_info_calls,
-            self.num_get_info_failures,
-            self.getinfo_duration_distribution))
+            self.num_query_calls,
+            self.num_query_failures,
+            self.num_items_processed,
+            self.num_query_retries,
+            self.query_duration_distribution,
+            self.query_bytes_distribution,
+            self.query_sleep_distribution,
+            add_retries_counters=True))
         | "Filter" >> beam.Filter(apply_filters, self.config)
         | "Transform" >> beam.Map(apply_transforms, self.config,
-                                  self.num_cropped_features)
-        | f"Process_{split}" >> beam.Map(_process_example, self.config))
+                                  self.num_cropped_features))
+    if post_process_map := self.config.get("post_process_map"):
+      tfds_pipe |= f"Posterprocess {split}" >> beam.ParDo(post_process_map)
+    return tfds_pipe | f"Process {split}" >> beam.Map(
+        _process_example, self.config
+    )
 
 
 def make_tfds_features(config):
@@ -359,22 +416,37 @@ def make_tfds_features(config):
   assert labels
   get_info = ee_export_utils.GetInfo(FLAGS.ee_project, config)
   get_info.start_bundle()
-  feature_data = next(get_info.process([labels[0]]))
+  feature_data = next(get_info.process(labels[0]))
   feature_data = apply_transforms(feature_data, config)
+  if post_process_map := config.get("post_process_map"):
+    if isinstance(post_process_map, beam.DoFn):
+      post_process_map.setup()
+      post_process_map.start_bundle()
+      # Assuming that the post_process_map.process function takes `flush` makes
+      # things significantly simpler for the inference pipe, which constructs
+      # batches of data and the finish bundle returns
+      # `beam.transforms.window.WindowedValue` objects instead of dict.
+      feature_data = next(post_process_map.process(feature_data, flush=True))
+    elif callable(post_process_map):
+      feature_data = post_process_map(feature_data)
+    else:
+      raise ValueError(f"Unsupported post_process_map: {post_process_map}")
   _, data = _process_example(feature_data, config)
   out = {}
+
+  metadata_keys = _get_metadata_keys(config)
   for k, v in data.items():
     v = np.array(v)
     dtype = v.dtype
-    if k == "hr" or k.startswith("hr_"):
-      if k == "hr_timestamps":
-        out[k] = tfds.features.Sequence(tfds.features.Tensor(
-            shape=(), dtype=dtype))
-      else:
-        sz = math.ceil(config.labels.img_width_m / config.sources.hr.scale)
-        hr_shape = (sz, sz, 3)
-        out[k] = tfds.features.Sequence(
-            tfds.features.Tensor(shape=hr_shape, dtype=dtype))
+    if k in metadata_keys:
+      out[k] = tfds.features.Sequence(
+          tfds.features.Tensor(shape=(), dtype=dtype)
+      )
+    elif _is_time_varying_algo(config, k.replace("_mask", "")):
+      # Assume that width, height and channels are the same for all plots.
+      out[k] = tfds.features.Sequence(
+          tfds.features.Tensor(shape=v.shape[-3:], dtype=dtype)
+      )
     else:
       if v.shape:
         out[k] = tfds.features.Tensor(shape=v.shape, dtype=dtype)

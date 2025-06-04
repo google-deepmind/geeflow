@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,39 +14,147 @@
 
 """EarthEngine algorithms for data pipelines."""
 
-from collections.abc import Callable
+import collections
+from collections.abc import Callable, Sequence
+import datetime
+import functools
+from typing import Any
 
-from geeflow import times
+from dateutil import relativedelta
 import ml_collections
+import numpy as np
 
 import ee
 
+_SYSTEM_PREFIX: str = "system:"
+_SYSTEM_PREFIX_SUBSTITUTE: str = "notsystem:"
+_SYSTEM_PROPERTIES = "system:time_start", "system:index"
+_TIMESTAMP_PROP = "system:time_start"
+_ASSET_ID_PROP = "system:index"
 
 FEATURE_EXISTS_INTEGER_KEY = "GEEFLOW_INTERNAL_EXISTS"
 
 
-def fc_get(fc: ee.FeatureCollection, roi: ee.Geometry, prop: str) -> ee.Array:
+def rgb_ic_sample(*args, **kwargs):
+  return ic_sample(*args, **kwargs)
+
+
+def sample_roi(*_, **__):  # pylint: disable=unused-argument
+  """Placeholder for backwards compatibility."""
+
+
+def _preprocess_ic(
+    roi: ee.Geometry,
+    ic: ee.ImageCollection,
+    cloud_mask_fn: Callable[[ee.Image], ee.Image] | None = None,
+    sort_by: str | None = None,
+    ascending: bool = True,
+    bands: list[str] | None = None,
+    filter_bounds: bool = True,
+    roi_filter_fn: Callable[..., ee.ImageCollection] | None = None,
+    dummy_im: ee.Image | None = None,
+    date_range: tuple[str, str] | None = None,
+    limit: int | None = None,
+) -> ee.ImageCollection:
+  """Preprocesses the image collection."""
+  if filter_bounds:
+    ic = ic.filterBounds(roi)  # Can lead to error if all images filtered out.
+    # For NICFI (& other fixed-sized ICs), consider to set filter_bounds=False.
+  if roi_filter_fn:
+    ic = roi_filter_fn(ic, roi=roi)
+  if sort_by:
+    ic = ic.sort(sort_by, ascending)
+  if cloud_mask_fn:
+    ic = ic.map(lambda x: x.updateMask(cloud_mask_fn(x)))
+  if bands:
+    ic = ic.select(bands)
+  if date_range:
+    ic = ic.filterDate(*date_range)
+  if limit:
+    ic = ic.limit(limit)
+  if dummy_im:
+    ic = ee.ImageCollection(ee.Algorithms.If(ic.size().neq(0), ic,
+                                             ee.ImageCollection(dummy_im)))
+  return ic
+
+
+def fetch_image_collection_properties(
+    collection: ee.ImageCollection, additional_properties: Sequence[str] = ()
+):
+  """Fetches the specified properties of all the images sorted by timestamp.
+
+  Args:
+    collection: The input image collection.
+    additional_properties: Additional property names to fetch.
+
+  Returns:
+    List of dicts containing the retrieved properties for each image in the
+    collection.
+  """
+  properties = (*_SYSTEM_PROPERTIES, *additional_properties)
+
+  def remap_features(f: ee.Feature):
+    # Drop the geometry and any features we don't want.
+    f = ee.Feature(None, {}).copyProperties(f, properties)
+    for property_name in properties:
+      if property_name.startswith(_SYSTEM_PREFIX):
+        remapped_name = _SYSTEM_PREFIX_SUBSTITUTE + property_name.removeprefix(
+            _SYSTEM_PREFIX
+        )
+        f = f.set(remapped_name, f.get(property_name))
+    return f
+
+  feature_col = ee.FeatureCollection(collection).map(remap_features)
+  params = {"expression": feature_col}
+  features = []
+  while True:
+    response = ee.data.computeFeatures(params)
+    features.extend(response.get("features", []))
+    if "nextPageToken" in response:
+      params["pageToken"] = response["nextPageToken"]
+    else:
+      break
+
+  for f in features:
+    for property_name in properties:
+      if property_name.startswith(_SYSTEM_PREFIX):
+        remapped_name = _SYSTEM_PREFIX_SUBSTITUTE + property_name.removeprefix(
+            _SYSTEM_PREFIX
+        )
+        if remapped_name in f["properties"]:
+          f["properties"][property_name] = f["properties"].pop(remapped_name)
+      f["properties"].setdefault(property_name, "unknown")
+  features = [f["properties"] for f in features]
+  # Sort by timestamp if available.
+  return sorted(features, key=lambda x: x.get(_TIMESTAMP_PROP, 0))
+
+
+def fc_get(
+    fc: ee.FeatureCollection, roi: ee.Geometry, properties: Sequence[str]
+) -> dict[str, Any | set[Any]]:
   fc = fc.filterBounds(roi)
-  return ee.Algorithms.If(fc.size().neq(0), fc.first().get(prop), "unknown")
+  fc_properties = fetch_image_collection_properties(fc, properties)
+  return fc_properties[0]
+  # What if there are multiple properties? For example, a plot that belong to
+  # multiple countries. Could we group them as a set?
+  # return {k: set(dic[k] for dic in fc_properties) for k in fc_properties[0]}
 
 
 def fc_to_image(
     fc: ee.FeatureCollection,
     roi: ee.Geometry,
     props: list[str],
-    scale: int,
     class_names: dict[str, list[str]] | None = None,
     reducer: str = "max",
     drop_missing_classes: bool = True,
     missing_class_value: int = -1,
-) -> tuple[ee.Array, ee.Array]:
+) -> ee.Image:
   """Returns FC data.
 
   Args:
     fc: FeatureCollection.
     roi: ROI UTM bounds geometry with an HxW grid.
     props: Selected properties of fc.
-    scale: Output pixel spacing in meters.
     class_names: A dict of property names mapped to list of classes, which are
       to be mapped to ints. If only a single list is given, it is matched to
       props[0] property.
@@ -57,7 +165,7 @@ def fc_to_image(
       `drop_missing_classes` is False.
 
   Returns:
-    An ee.Array() with dimensions (N, H, W, C) or (H, W, C) and its mask.
+    An np.ndarray with dimensions (N, H, W, C) or (H, W, C) and its mask.
   """
 
   def to_scalar(feature, props, dic):
@@ -78,108 +186,74 @@ def fc_to_image(
       fc = fc.map(lambda f: to_scalar(feature=f, props=key, dic=dic))  # pylint: disable=cell-var-from-loop
   im = fc.reduceToImage(properties=props,
                         reducer=get_fc_reduce_fn(reducer).forEach(props))
-  im = im.reproject(roi.projection().crs(), scale=scale)
-  return sample_roi(im, roi, scale=scale)
+  return im
+
+
+def _add_ccdc_bands_2d(ic, num_segments, im=None):
+  """Adds CCDC bands with shape (num_segments, 8)."""
+  zeros = ee.Array([0]).repeat(0, num_segments).repeat(1, 8)
+  for j in range(num_segments):
+    for i in range(8):
+      im_ji = (
+          ic.unmask(zeros, False)
+          .arrayCat(zeros, 0)
+          .float()
+          .arraySlice(0, 0, num_segments)
+          .arrayGet([j, i])
+      )
+      rename_fn = functools.partial(
+          lambda n, idx: ee.String(n).cat(ee.String(idx)), idx=f"#{j}#{i}"
+      )
+      im_ji = im_ji.rename(im_ji.bandNames().map(rename_fn))
+      im = im_ji if im is None else im.addBands(im_ji)
+  return im
+
+
+def _add_ccdc_bands_1d(ic, num_segments, im=None):
+  zeros = ee.Array([0]).repeat(0, num_segments)
+  for j in range(num_segments):
+    im_i = ic.unmask(zeros, False).arrayCat(zeros, 0).float().arrayGet(j)
+    rename_fn = functools.partial(
+        lambda n, idx: ee.String(n).cat(ee.String(idx)), idx=f"#{j}#0"
+    )
+    im_i = im_i.rename(im_i.bandNames().map(rename_fn))
+    im = im_i if im is None else im.addBands(im_i)
+  return im
 
 
 def get_ccdc(
     ic: ee.ImageCollection,
     roi: ee.Geometry,
     *,
-    scale: int,
     bands: list[str],
     num_segments: int,
-) -> dict[str, ee.Array]:
+) -> ee.Image:
   """Returns CCDC data.
 
   Args:
     ic: CCDC's ImageCollection.
     roi: ROI UTM bounds geometry with an HxW grid. Alternatively, it can be an
       ee.Point which will results in (H, W) == (1, 1).
-    scale: Output pixel spacing in meters.
     bands: What bands to include in the output.
     num_segments: How many detected CCDC segments to return. If not enough, will
       be padded with zeros.
+
   Returns:
     A dict of band names to ee.Array().
   """
-  crs = roi.projection().crs()
   ccdc = ic.filterBounds(roi)
-  ccdc = ee.Algorithms.If(ccdc.size().eq(0), ic.first(), ccdc.mosaic())
-  ccdc = ee.Image(ccdc)
-  zeros_1d = ee.Array([0]).repeat(0, num_segments)
-  zeros_2d = ee.Array([0]).repeat(0, num_segments).repeat(1, 8)
-  bands_1d = [band for band in bands if not band.endswith("_coefs")]
-  bands_2d = [band for band in bands if band.endswith("_coefs")]
-  ccdc_1d = ccdc.select(bands_1d).unmask(zeros_1d, False).arrayCat(
-      zeros_1d, 0).float().arraySlice(0, 0, num_segments)
-  ccdc_2d = ccdc.select(bands_2d).unmask(zeros_2d, False).arrayCat(
-      zeros_2d, 0).float().arraySlice(0, 0, num_segments)
-  ccdc_1d = ee.Array(ccdc_1d.toArray().reproject(crs=crs, scale=scale)
-                     .sampleRectangle(roi).get("array"))
-  ccdc_2d = ee.Array(ccdc_2d.toArray().reproject(crs=crs, scale=scale)
-                     .sampleRectangle(roi).get("array"))
-  res = {}
-  for i, band in enumerate(bands_1d):
-    res[band] = ccdc_1d.slice(axis=2,
-                              start=i*num_segments, end=(i+1)*num_segments)
-  for i, band in enumerate(bands_2d):
-    res[band] = ccdc_2d.slice(axis=2,
-                              start=i*num_segments, end=(i+1)*num_segments)
-  return res
-
-
-def sample_roi(
-    ic: ee.ImageCollection | ee.Image,
-    roi: ee.Geometry,
-    *,
-    scale: int,
-    crs: str | None = None,
-    mask_value: int = 0,
-) -> tuple[ee.Array, ee.Array]:
-  """Samples one ROI in Image or ImageCollection and returns as Array.
-
-  Args:
-    ic: ImageCollection of N images (or a single Image) with C bands each.
-    roi: ROI UTM bounds geometry with an HxW grid. Alternatively, it can be an
-      ee.Point which will results in (H, W) == (1, 1).
-    scale: Output pixel spacing in meters.
-    crs: CRS of ROI (usually UTM). If not given, extracted from ROI.
-    mask_value: Value to insert into invalid masked out pixels. Defaults to `0`,
-      which is fine for most cases. For categorical data, one might want to set
-      it eg. to `-1`.
-  Returns:
-    An ee.Array() with dimensions (N, H, W, C) or (H, W, C).
-    An ee.Array() of the mask with the same dimensions.
-  """
-  crs = crs or roi.projection().crs()
-  # Change masked out values with 0 (unmask(0, False)) and add the mask.
-  if isinstance(ic, ee.ImageCollection):
-    ic = ic.map(lambda x: x.unmask(mask_value, False).addBands(x.mask()))
-  else:
-    ic = ic.unmask(mask_value, False).addBands(ic.mask())
-  arr = (
-      ic.toArray()
-      .reproject(crs=crs, scale=scale)
-      .sampleRectangle(roi)
-      .get("array")
+  ccdc = ee.Image(
+      ee.Algorithms.If(ccdc.size().eq(0), ic.first(), ccdc.mosaic())
   )
-  arr = ee.Array(arr)
-  if isinstance(ic, ee.ImageCollection):
-    arr = arr.transpose(1, 2).transpose(0, 1)
-  # Split in half on the last axis to separate the mask.
-  axis = arr.length().length().subtract(1).get([0]).toInt()
-  num_bands = arr.length().get([-1]).divide(2)
-  return arr.slice(axis, 0, num_bands), arr.slice(axis, num_bands)
 
+  bands_1d = [band for band in bands if not band.endswith("_coefs")]
+  im = _add_ccdc_bands_1d(ccdc.select(bands_1d), num_segments)
 
-def ic_timestamps(
-    ic: ee.ImageCollection, name: str = "system:time_start"
-) -> ee.Array:
-  """Returns a 1D array of timestamps (as millis)."""
-  t = ee.FeatureCollection(ic).aggregate_array(name)
-  t = ee.Array(t)
-  return t
+  bands_2d = [band for band in bands if band.endswith("_coefs")]
+  im = _add_ccdc_bands_2d(ccdc.select(bands_2d), num_segments, im)
+
+  assert im is not None
+  return im
 
 
 def get_dummy_image(im: ee.Image) -> ee.Image:
@@ -232,6 +306,10 @@ def get_ic_reduce_fn(
     if name == "reduceResolutionToMeanAndStd":
       reducer = ee.Reducer.mean().combine(ee.Reducer.stdDev(),
                                           sharedInputs=True)
+    elif name == "reduceResolutionToMeanAndStdAndMax":
+      reducer = ee.Reducer.mean().combine(
+          ee.Reducer.stdDev(), sharedInputs=True).combine(
+              ee.Reducer.max(), sharedInputs=True)
     elif name == "reduceResolutionToMax":
       reducer = ee.Reducer.max()
     else:
@@ -282,51 +360,30 @@ def ic_sample(
     roi: ee.Geometry,
     ic: ee.ImageCollection,
     *,
-    scale: int,
-    filter_bounds: bool = True,
-    limit: int | None = None,
-) -> tuple[ee.Array, ee.Array, ee.Array]:
-  """Returns ROI samples for all filtered IC images."""
-  if filter_bounds:  # Can lead to error if all images filtered out.
-    # For NICFI (& other fixed-sized ICs), consider to set filter_bounds=False.
-    ic = ic.filterBounds(roi)
-    # To avoid errors if empty, provide default_array_value to sample_roi(), or
-    # ic = ee.Algorithms.If(ic.size().neq(0), ic, ic_orig)
-  if limit:
-    ic = ic.limit(limit)
-  samples, samples_mask = sample_roi(ic, roi, scale=scale)
-  timestamps = ic_timestamps(ic)
-  return samples, samples_mask, timestamps
-
-
-def rgb_ic_sample(
-    roi: ee.Geometry,
-    ic: ee.ImageCollection,
-    *,
-    scale: int,
+    cloud_mask_fn: Callable[[ee.Image], ee.Image] | None = None,
+    sort_by: str | None = None,
+    ascending: bool = True,
+    bands: list[str] | None = None,
     filter_bounds: bool = True,
     roi_filter_fn: Callable[..., ee.ImageCollection] | None = None,
     limit: int | None = None,
-) -> tuple[ee.Array, ee.Array, ee.Array]:
-  """Returns ROI samples for all filtered RGB/Magrathean IC images."""
-  if filter_bounds:  # For NICFI (& other fixed-sized ICs), set to False.
-    ic = ic.filterBounds(roi)
-  if roi_filter_fn:
-    ic = roi_filter_fn(ic, roi=roi)
-  if limit:
-    ic = ic.limit(limit)
-  # If IC is empty, return empty arrays.
-  # TODO: Figure out if sample_roi is call twice on GEE side and
-  # optimize the code if needed.
-  samples = ee.Array(ee.Algorithms.If(ic.size().neq(0),
-                                      sample_roi(ic, roi, scale=scale)[0],
-                                      ee.Array([], ee.PixelType.uint8())))
-  samples_mask = ee.Array(ee.Algorithms.If(ic.size().neq(0),
-                                           sample_roi(ic, roi, scale=scale)[1],
-                                           ee.Array([], ee.PixelType.uint8())))
-  timestamps = ee.Array(ee.Algorithms.If(ic.size().neq(0), ic_timestamps(ic),
-                                         ee.Array([], ee.PixelType.int64())))
-  return samples, samples_mask, timestamps
+    additional_properties: Sequence[str] = (),
+    date_range: tuple[str, str] | None = None,
+) -> tuple[Sequence[ee.Image], dict[str, np.ndarray]]:
+  """Returns ROI samples for all filtered IC images."""
+  ic = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
+                      filter_bounds, roi_filter_fn, limit=limit,
+                      date_range=date_range)
+  ims, metadata = [], collections.defaultdict(list)
+  for prop in fetch_image_collection_properties(ic, additional_properties):
+    im_t = ic.filter(ee.Filter.eq(_ASSET_ID_PROP, prop[_ASSET_ID_PROP])).first()
+    ims.append(im_t)
+    metadata["timestamps"].append(prop[_TIMESTAMP_PROP])
+    for p in additional_properties:
+      metadata[p].append(prop[p])
+  if ims:
+    return ims, {k: np.asarray(v) for k, v in metadata.items()}
+  return [], {k: np.array([]) for k in additional_properties}
 
 
 def ic_sample_reduced(
@@ -334,75 +391,59 @@ def ic_sample_reduced(
     ic: ee.ImageCollection,
     *,
     scale: int,
-    dummy_im: ee.Image,
+    cloud_mask_fn: Callable[[ee.Image], ee.Image] | None = None,
+    sort_by: str | None = None,
+    ascending: bool = True,
+    bands: list[str] | None = None,
+    filter_bounds: bool = True,
+    roi_filter_fn: Callable[..., ee.ImageCollection] | None = None,
+    dummy_im: ee.Image | None = None,
     reduce_fn: str = "mosaic",
     **reduce_fn_kwargs,
-) -> tuple[ee.Array, ee.Array]:
+) -> ee.Image:
   """Returns ROI samples reduced over the whole IC."""
-  ic = ic.filterBounds(roi)
+  ic = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
+                      filter_bounds, roi_filter_fn, dummy_im)
   reduce_fn = get_ic_reduce_fn(reduce_fn, scale=scale, roi=roi,
                                **reduce_fn_kwargs)
-  reduced = ee.Algorithms.If(ic.size().neq(0),
-                             reduce_fn(ic),
-                             reduce_fn(ee.ImageCollection([dummy_im])))
-  reduced = ee.Image(reduced)
-  samples, samples_mask = sample_roi(reduced, roi, scale=scale)
-  return samples, samples_mask
+  return reduce_fn(ic)
 
 
 def ic_sample_date_ranges(
     roi: ee.Geometry,
     ic: ee.ImageCollection,
     *,
-    date_ranges: tuple[str, int, int],
     scale: int,
-    dummy_im: ee.Image,
     cloud_mask_fn: Callable[[ee.Image], ee.Image] | None = None,
     sort_by: str | None = None,
     ascending: bool = True,
-    reduce_fn: str = "mosaic",
     bands: list[str] | None = None,
+    filter_bounds: bool = True,
+    roi_filter_fn: Callable[..., ee.ImageCollection] | None = None,
+    date_ranges: tuple[str, int, int],
+    dummy_im: ee.Image | None = None,
+    reduce_fn: str = "mosaic",
+    limit: int | None = None,
     **reduce_fn_kwargs,
-) -> tuple[ee.Array, ee.Array, ee.Array]:
+) -> tuple[Sequence[ee.Image], dict[str, np.ndarray]]:
   """Returns ROI samples reduced over given date ranges."""
-  ic = ic.filterBounds(roi)
-  if sort_by:
-    ic = ic.sort(sort_by, ascending)
-
-  reduce_fn = get_ic_reduce_fn(reduce_fn, scale=scale, roi=roi,
-                               **reduce_fn_kwargs)
-  update_cloud_mask = (
-      lambda x: x.updateMask(cloud_mask_fn(x)) if cloud_mask_fn else x)
-  dummy_im = reduce_fn(ee.ImageCollection([dummy_im]))
-  orig_bandnames = dummy_im.bandNames()
-
-  def _proc_date_range(date_range_feature):
-    dr = ee.DateRange(date_range_feature.get("date_range"))
-    dr_ic = ic.filterDate(dr)
-    reduced = ee.Algorithms.If(
-        dr_ic.size().neq(0),
-        reduce_fn(dr_ic.map(update_cloud_mask))
-        .rename(orig_bandnames),
-        dummy_im)
-    return ee.Image(reduced).set("timestamp", times.date_range_mean(dr))
-
-  date_ranges = ee.FeatureCollection(
-      [ee.Feature(None, {"date_range": ee.DateRange(
-          dr[0], ee.Date(dr[0]).advance(dr[1], "month").advance(dr[2], "day"))})
-       for dr in date_ranges]
+  reduce_fn = get_ic_reduce_fn(
+      reduce_fn, scale=scale, roi=roi, **reduce_fn_kwargs
   )
-  reduced_fc = date_ranges.map(_proc_date_range)
-  # If there are no images within a time range, there will be no image bands,
-  # and the sampling will drop those.
-  # To keep the timestamps synchronized, let's drop those bands early on.
-  reduced_fc = reduced_fc.filterBounds(roi)
+  ims, ts = [], []
+  for start, months, days in date_ranges:
+    start = datetime.datetime.strptime(start, r"%Y-%m-%d").replace(
+        tzinfo=datetime.timezone.utc  # Default EE timezone.
+    )
+    end = start + relativedelta.relativedelta(days=days, months=months)
+    ts.append(int(start.timestamp() + end.timestamp()) // 2 * 1000)
 
-  reduced_ic = ee.ImageCollection(reduced_fc)
-  if bands:
-    reduced_ic = reduced_ic.select(bands)
-  samples, samples_mask = sample_roi(reduced_ic, roi, scale=scale)
-  timestamps = ic_timestamps(reduced_ic, "timestamp")
-  return samples, samples_mask, timestamps
+    dates_range = start.strftime(r"%Y-%m-%d"), end.strftime(r"%Y-%m-%d")
+    ic_t = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
+                          filter_bounds, roi_filter_fn, dummy_im, dates_range,
+                          limit=limit)
+    ims.append(reduce_fn(ic_t))
+  return ims, dict(timestamps=np.array(ts))
 
 
 def add_roi_validity(im: ee.Image, roi: ee.Geometry, band: str = "R",
@@ -411,11 +452,7 @@ def add_roi_validity(im: ee.Image, roi: ee.Geometry, band: str = "R",
   im_orig = im
   if scale:
     im = im_orig.reproject(crs=roi.projection().crs(), scale=scale)
-  sample = (im
-            .select(band)
-            .mask()
-            .sampleRectangle(roi)
-            .get(band))
+  sample = im.select(band).mask().sampleRectangle(roi).get(band)
   arr = ee.Array(sample).toFloat()
   mean = arr.reduce(ee.Reducer.mean(), [0, 1])
   mean = mean.get([0, 0])  # Returns scalar instead of (1, 1) array.

@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,12 +15,13 @@
 """Pipelines for processing EE Geo data."""
 
 from collections.abc import Callable, Sequence
+import dataclasses
+import functools
 import io
 import os
 import tempfile
 from typing import Any
 
-# pylint: disable=g-long-lambda
 from absl import logging
 from geeflow import coords
 from geeflow import ee_algo
@@ -55,6 +56,17 @@ ALGO_MAP |= {k: ee_algo.rgb_ic_sample for k in RGB_IC_SAMPLE}
 ALGO_MAP |= {k: ee_algo.sample_roi for k in SAMPLE_ROI}
 ALGO_MAP |= {k: ee_algo.fc_get for k in FC_GET}
 ALGO_MAP["CCDC"] = ee_algo.get_ccdc
+
+
+@dataclasses.dataclass(frozen=True)
+class Request:
+  """A data request for Earth Engine."""
+  image: ee.Image
+  roi: ee.Geometry
+  scale: int
+  name: str
+  crs: str | None = None
+  fixed_band_names: bool = True
 
 
 def save_df_to_file(df: pd.DataFrame, path: str) -> None:
@@ -107,22 +119,13 @@ def pipeline_labels(
   if df is None:
     df = get_labels_df(config, config.labels.get("cache"))
   meta_keys = list(config.labels.meta_keys or df.columns)
-  if "id" in meta_keys:
-    meta_keys.remove("id")
   if set(meta_keys) - set(df.columns):
     raise ValueError(f"Some meta keys ({meta_keys}) are "
                      f"not in data columns ({df.columns}).")
   df = df[meta_keys]
-  columns = df.columns.values.tolist()
-  values = df.values.tolist()
-  meta_keys_indices = [
-      (key, columns.index(key)) for key in meta_keys]
-  # These are `Features` with ROI geometries.
-  def get_properties(index, row):
-    return {"id": index,
-            **{key[0]: row[key[1]] for key in meta_keys_indices}}
-  item_properties = [get_properties(i, r) for i, r in enumerate(values)]
-  return item_properties
+  if "id" not in df.columns:
+    df["id"] = range(len(df))
+  return df.to_dict("records")
 
 
 def pipeline_item_to_roi(
@@ -283,28 +286,31 @@ def _get_dummy_im(asset: EeAssetType, cfg: ConfigDict) -> ee.Image:
   return dummy_im
 
 
-def get_roi_sample_dict_fn(
+def get_requests_fn(
     config: mlc.ConfigDict, sources: ConfigDict
-) -> Callable[..., dict[str, ee.ComputedObject]]:
+) -> Callable[..., tuple[Sequence[Request], dict[str, Any]]]:
   """Constructs a sampling function."""
   # Reference scale for geometry.
   ref_scale = config.labels.get("max_cell_size_m")
 
-  def _roi_sample(rois: dict[str, ee.Geometry],
-                  item: dict[str, Any]) -> dict[str, ee.ComputedObject]:
-    d = dict(item)
+  def _request_fn(rois: dict[str, ee.Geometry], item: dict[str, Any]):
+    requests = []
+    metadata = dict(item)
     default_roi = rois["_default_roi"]
-    if "lon" not in d:
+    if "lon" not in metadata:
       logging.warning("No lat/lon in meta_keys. Extracting from feature.")
-      d["lon"] = default_roi.centroid(0.1).coordinates().get(0)
-      d["lat"] = default_roi.centroid(0.1).coordinates().get(1)
+      metadata["lon"] = default_roi.centroid(0.1).coordinates().get(0)
+      metadata["lat"] = default_roi.centroid(0.1).coordinates().get(1)
 
     for name, asset in sources.items():
       cfg = config.sources.get(name)
       scale = cfg.get("scale") or config.labels.default_scale
       scalar = cfg.get("scalar", False)
+      mask_value = cfg.get("mask_value", 0)
+      kw = dict(cfg.get("sampling_kw", {}))
+
       roi = rois.get(name, default_roi)
-      geometry = roi.centroid(1) if scalar else roi
+      roi = roi.centroid(1) if scalar else roi
 
       # If scale and ref_scale grids don't overlap, realign to closest.
       # This is to to ensure equal gridded image sizes.
@@ -312,7 +318,7 @@ def get_roi_sample_dict_fn(
       # based ROIs. Likely requires passing lat/lon scale to .reproject somehow.
       if (config.labels.get("use_utm", True) and not scalar and scale and
           (scale > ref_scale or ref_scale % scale != 0)):
-        geometry = realign_geometry_scale(geometry, scale)
+        roi = realign_geometry_scale(roi, scale)
 
       if cfg.get("filter_date", True) and hasattr(asset, "filterDate"):
         # Usage example:
@@ -327,57 +333,94 @@ def get_roi_sample_dict_fn(
           asset = asset.filterDate(start, end)
 
       algo = get_algo_from_config(config, name)
+      split_dates_into_separate_requests = cfg.get(
+          "split_dates_into_separate_requests", False)
+      asset_ims = []
       if algo == ee_algo.get_ccdc:
-        tmp = algo(asset, geometry, scale=scale, bands=cfg.get("select"),
-                   **cfg.get("sampling_kw", {}))
-        for k, v in tmp.items():
-          d[f"{name}_{k}"] = v
+        ccdc_im = algo(asset, roi, bands=cfg.get("select"), **kw)
+        rename_fn = functools.partial(
+            lambda b, n: ee.String(n + "_").cat(ee.String(b)), n=name
+        )
+        ccdc_im = ccdc_im.rename(ccdc_im.bandNames().map(rename_fn))
+        asset_ims.append(ccdc_im)
       elif algo == ee_algo.sample_roi:
-        d[name], d[f"{name}_mask"] = algo(
-            asset, geometry, scale=scale, **cfg.get("sampling_kw", {}))
-      elif algo == ee_algo.rgb_ic_sample:
-        d[name], d[f"{name}_mask"], d[f"{name}_timestamps"] = algo(
-            geometry, asset, scale=scale, **cfg.get("sampling_kw", {}))
-      elif algo == ee_algo.ic_sample:
-        d[name], d[f"{name}_mask"], d[f"{name}_timestamps"] = algo(
-            geometry, asset, scale=scale, **cfg.get("sampling_kw", {}))
+        asset_ims.append(_add_mask_and_rename(asset, name, "", mask_value))
+      elif algo in [
+          ee_algo.ic_sample,
+          ee_algo.rgb_ic_sample,
+          ee_algo.ic_sample_date_ranges,
+      ]:
+        kw["limit"] = cfg.get("limit")
+        if algo in [ee_algo.ic_sample_date_ranges, ee_algo.ic_sample]:
+          kw_name = "date_range" if algo == ee_algo.ic_sample else "date_ranges"
+          value = cfg.get(kw_name)
+          if fn := cfg.get(f"{kw_name}_fn"):
+            if value:
+              raise ValueError(f"Both {kw_name} and {kw_name}_fn are set.")
+            # Usage example for `ic_sample_date_ranges`:
+            # c.l7_v2.date_ranges_fn = functools.partial(
+            #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
+            value = fn(item)
+          kw[kw_name] = value
+
+        if algo == ee_algo.ic_sample_date_ranges:
+          kw["dummy_im"] = _get_dummy_im(asset, cfg)
+          kw["bands"] = cfg.get("select_final")
+          kw["scale"] = scale
+
+        ims, ims_metadata = algo(roi, asset, **kw)
+        metadata |= {f"{name}_{k}": v for k, v in ims_metadata.items()}
+        # "#{t}" is used to concatenate along the time dimension.
+        asset_ims += [
+            _add_mask_and_rename(im, name, f"#{t}", mask_value)
+            for t, im in enumerate(ims)
+        ]
       elif algo == ee_algo.ic_sample_reduced:
         dummy_im = _get_dummy_im(asset, cfg)
-        d[name], d[f"{name}_mask"] = algo(
-            geometry, asset, scale=scale, dummy_im=dummy_im,
-            **cfg.get("sampling_kw", {}))
-      elif algo == ee_algo.ic_sample_date_ranges:
-        dummy_im = _get_dummy_im(asset, cfg)
-        date_ranges = cfg.get("date_ranges")
-        if cfg.get("date_ranges_fn"):
-          assert not date_ranges, "Both date_ranges and date_ranges_fn are set."
-          # Usage example:
-          # c.l7_v2.date_ranges_fn = functools.partial(
-          #     times.get_date_ranges_from_year, year_key="year", n=4, months=3)
-          date_ranges = cfg.date_ranges_fn(item)
-        d[name], d[f"{name}_mask"], d[f"{name}_timestamps"] = algo(
-            geometry, asset, scale=scale, bands=cfg.get("select_final"),
-            date_ranges=date_ranges, dummy_im=dummy_im,
-            **cfg.get("sampling_kw", {}))
+        im = algo(roi, asset, dummy_im=dummy_im, scale=scale, **kw)
+        asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
       elif algo == ee_algo.fc_get:
-        for p in cfg.get("select"):
-          d[f"{name}_{p}"] = algo(asset, geometry, p)
+        metadata |= {f"{name}_{p}": v for p, v in
+                     algo(asset, roi, cfg["select"]).items()}
       elif algo == ee_algo.fc_to_image:
-        d[name], d[f"{name}_mask"] = algo(
-            asset, geometry, scale=scale, props=cfg.get("select"),
-            **cfg.get("sampling_kw", {}))
+        im = algo(asset, roi, props=cfg.get("select"), **kw)
+        asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
 
-    return d
-  return _roi_sample
+      if asset_ims:
+        if split_dates_into_separate_requests:
+          for im in asset_ims:
+            requests.append(Request(im, roi, scale, name, cfg.get("crs")))
+        else:
+          # b/393557949 - This currently combines timesteps for the same asset
+          # in a single ee.data.computePixels call. See ee_export_utils.py for
+          # more details on how this could be better optimized.
+          asset_im = functools.reduce(
+              lambda im, im_acc: im_acc.addBands(im), asset_ims
+          )
+          # When we don't split dates into separate requests and we use ee_algo
+          # without a fixed number of timesteps, the names of the bands changes
+          # to include the timestep index, meaning that the names of the bands
+          # are not fixed for each request.
+          fixed_bands = algo not in [ee_algo.ic_sample, ee_algo.rgb_ic_sample]
+          requests.append(
+              Request(asset_im, roi, scale, name, cfg.get("crs"), fixed_bands)
+          )
+    return requests, metadata
+
+  return _request_fn
 
 
-def get_roi_sample_fn(
-    config: ConfigDict, sources: ConfigDict
-) -> Callable[..., ee.Feature]:
-  """Constructs a sampling function."""
-  fn = get_roi_sample_dict_fn(config, sources)
-
-  def _roi_sample(rois, item):
-    d = fn(rois, item)
-    return ee.Feature(rois["_default_roi"], d)
-  return _roi_sample
+def _add_mask_and_rename(
+    im: ee.Image, name: str, idx: str, mask_value: int
+) -> ee.Image:
+  """Adds mask and renames bands."""
+  out = im.rename(
+      im.bandNames().map(lambda x: ee.String(f"{name}{idx}/").cat(x))
+  )
+  return out.unmask(mask_value, False).addBands(
+      out.mask()
+      .toUint8()
+      .rename(
+          im.bandNames().map(lambda x: ee.String(f"{name}_mask{idx}/").cat(x))
+      )
+  )

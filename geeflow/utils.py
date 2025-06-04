@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,9 +33,13 @@ LON_TO_METERS = 112000
 
 
 def get_utm_grid_size(
-    start_lat: float, start_lon: float, end_lat: float, end_lon: float,
-    img_width_m: int, cell_expansion_offset_meters: int = 5000
-    ) -> tuple[int, int]:
+    start_lat: float,
+    start_lon: float,
+    end_lat: float,
+    end_lon: float,
+    img_width_m: float,
+    cell_expansion_offset_meters: int = 5000,
+) -> tuple[int, int]:
   """Returns the grid dimensions for the given UTM zone."""
   x_num = math.ceil(LON_TO_METERS * max(
       math.cos(start_lat / 180 * math.pi), math.cos(end_lat / 180 * math.pi),

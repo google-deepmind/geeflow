@@ -1,4 +1,4 @@
-# Copyright 2024 DeepMind Technologies Limited.
+# Copyright 2025 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,9 +16,12 @@
 
 from collections.abc import Sequence
 import dataclasses
+import functools
+from typing import Any
 
 import numpy as np
 import shapely.geometry
+import shapely.ops
 import utm as utm_lib
 
 import ee
@@ -42,15 +45,15 @@ class UtmGridMapping:
   """
   utm_zone: str  # UTM Zone (A-M: Southern, N-Z: Northern hemisphere).
   cell_size: float  # Pixel size, in meters.
-  width: int  # East-west dimension, in grid cells.
-  height: int  # North-south dimension, in grid cells.
+  width: int | np.ndarray  # East-west dimension, in grid cells.
+  height: int | np.ndarray  # North-south dimension, in grid cells.
   # Left bottom corner of discrete pixels.
   utm_x_min: float = 0.0  # Minimum easting.
   utm_y_min: float = 0.0  # Minimum northing.
 
   def __post_init__(self):
-    self.utm_x_min = round(self.utm_x_min / self.cell_size) * self.cell_size
-    self.utm_y_min = round(self.utm_y_min / self.cell_size) * self.cell_size
+    self.utm_x_min = np.round(self.utm_x_min / self.cell_size) * self.cell_size
+    self.utm_y_min = np.round(self.utm_y_min / self.cell_size) * self.cell_size
 
   @classmethod
   def from_bbox(cls, utm_zone: str, cell_size: float, bbox: Sequence[float],
@@ -65,7 +68,7 @@ class UtmGridMapping:
   @classmethod
   def from_latlon_center(cls, lat: float, lon: float, cell_size: float,
                          width: int, height: int | None = None):
-    height = height or width
+    height = width if height is None else height
     easting, northing, zone_number, zone_letter = utm_lib.from_latlon(lat, lon)
     utm_zone = f"{zone_number}{zone_letter}"
     x0 = easting - cell_size * width / 2.
@@ -101,7 +104,7 @@ class UtmGridMapping:
     )  # (x, y)
 
   @property
-  def centroid_latlon(self) -> tuple[float, float]:
+  def centroid_latlon(self) -> tuple[float | np.ndarray, float | np.ndarray]:
     y0, x0, y1, x1 = self.bbox_latlon
     return ((y1 + y0) / 2.0, (x1 + x0) / 2.0)  # (y, x) = (lat, lon)
 
@@ -114,8 +117,12 @@ class UtmGridMapping:
         self.utm_y_min + (self.height * self.cell_size),
     )  # (x0, y0, x1, y1)
 
-  @property
-  def bbox_latlon(self) -> tuple[float, float, float, float]:
+  @functools.cached_property
+  def bbox_latlon(
+      self,
+  ) -> tuple[float | np.ndarray, float | np.ndarray, float | np.ndarray,
+             float | np.ndarray]:
+    """Returns the bounding box in lat/lon coordinates."""
     south, west = utm_lib.to_latlon(self.utm_x_min, self.utm_y_min,
                                     int(self.utm_zone[:-1]), self.utm_zone[-1],
                                     strict=False)

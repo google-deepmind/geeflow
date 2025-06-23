@@ -1,0 +1,106 @@
+# yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
+
+# Project Information
+site_name: GeeFlow Documentation
+site_url: https://google-deepmind.github.io/geeflow/  # Replace if hosted elsewhere
+site_description: 'Documentation for GeeFlow: Python library for generating large scale geospatial datasets using Google Earth Engine.' # Optional but recommended for SEO
+site_author: 'Google DeepMind' # Optional
+docs_dir: 'docs'  # Change this directory to make tests with mkdocs serve
+
+# Repository Information (Connects docs to the code)
+repo_name: 'google-deepmind/geeflow'
+repo_url: 'https://github.com/google-deepmind/geeflow'
+
+# Theme Configuration
+theme:
+  name: material
+  # --- Optional Features & Customization (Examples) ---
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    # - content.code.select
+    # - content.footnote.tooltips
+    # - content.tabs.link
+    - content.tooltips
+    # - header.autohide
+    # - navigation.expand
+    - navigation.footer
+    - navigation.indexes
+    # - navigation.instant
+    # - navigation.instant.prefetch
+    # - navigation.instant.progress
+    # - navigation.prune
+    - navigation.sections
+    - navigation.tabs
+    # - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+    # - toc.integrate
+  palette:
+    scheme: default # Or 'slate' for dark mode
+    primary: 'dark-blue'
+    accent: 'black'
+  logo: https://raw.githubusercontent.com/google-deepmind/geeflow/refs/heads/main/docs/images/geeflow_logo_1.png
+  # favicon: 'assets/favicon.ico' # Requires creating docs/assets/favicon.ico
+
+# Navigation (Basic example - will be expanded later)
+nav:
+  - Home: index.md
+
+# Markdown Extensions (Optional - useful for advanced formatting)
+# Extensions
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      normalize_issue_symbols: true
+      repo_url_shorthand: true
+      user: squidfunk
+      repo: mkdocs-material
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      auto_append:
+        - includes/mkdocs.md
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde

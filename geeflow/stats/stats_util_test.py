@@ -180,11 +180,6 @@ class StatsUtilTest(parameterized.TestCase):
     self.assertEqual(median, 4.5)
     self.assertEqual(q75, 7.5)
 
-  def test_standardized_path(self):
-    path = stats_util.standardized_path("planted/x:0.0.1", "test", "100n")
-    expected = "/tmp/geeflow/stats/planted/x/0.0.1/test_100n.json"
-    self.assertEqual(expected, path)
-
 
 if __name__ == "__main__":
   absltest.main()

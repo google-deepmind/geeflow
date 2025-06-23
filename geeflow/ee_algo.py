@@ -35,10 +35,6 @@ _ASSET_ID_PROP = "system:index"
 FEATURE_EXISTS_INTEGER_KEY = "GEEFLOW_INTERNAL_EXISTS"
 
 
-def rgb_ic_sample(*args, **kwargs):
-  return ic_sample(*args, **kwargs)
-
-
 def sample_roi(*_, **__):  # pylint: disable=unused-argument
   """Placeholder for backwards compatibility."""
 
@@ -457,3 +453,10 @@ def add_roi_validity(im: ee.Image, roi: ee.Geometry, band: str = "R",
   mean = arr.reduce(ee.Reducer.mean(), [0, 1])
   mean = mean.get([0, 0])  # Returns scalar instead of (1, 1) array.
   return im_orig.set({"validity": mean})
+
+
+def add_abs_time_difference(im: ee.Image, ref_date: ee.Date) -> ee.Image:
+  """Returns im with `date_difference` property set to ms from ref_date."""
+  abs_time_difference = (
+      ee.Number(im.get("system:time_start")).subtract(ref_date.millis()).abs())
+  return im.set("abs_time_difference", abs_time_difference)

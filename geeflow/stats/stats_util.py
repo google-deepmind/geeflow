@@ -22,6 +22,7 @@ from typing import Any
 
 from absl import logging
 import dataclasses_json
+from geeflow import utils
 import jax
 import ml_collections
 import numpy as np
@@ -115,7 +116,7 @@ class StatsAccumulator(dataclasses_json.DataClassJsonMixin):
 
   def save_json(self, path, split_name=None, postfix=None, drop_support=False):
     """Saves stats data as a dict json (dropping supportive args)."""
-    path = standardized_path(path, split_name, postfix)
+    path = utils.standardized_path(path, split_name, postfix, META_PATH)
     d = self.as_dict(drop_support)
     os.umask(0o022); gfile.makedirs(os.path.dirname(path))
     print(f"Saving data in {path}")
@@ -424,7 +425,7 @@ class BandsAccumulator():
 
   def save_json(self, path, split_name=None, postfix=None, drop_support=False):
     """Saves stats data as a dict json (dropping supportive args)."""
-    path = standardized_path(path, split_name, postfix)
+    path = utils.standardized_path(path, split_name, postfix, META_PATH)
     d = self.as_dict(drop_support)
     os.umask(0o022); gfile.makedirs(os.path.dirname(path))
     print(f"Saving data in {path}")
@@ -436,12 +437,14 @@ class BandsAccumulator():
 def load_json(path, split_name=None, postfix=None, as_cd=False,
               drop_support=True):
   """Returns dict of accumulated stats."""
-  full_path = standardized_path(path, split_name, postfix)
+  full_path = utils.standardized_path(path, split_name, postfix, META_PATH)
   if gfile.exists(full_path):
     with gfile.GFile(full_path, "r") as f:
       d = json.load(f)
   else:
-    full_path = standardized_path(path, split_name, postfix + BAND_PREFIX + "*")
+    full_path = utils.standardized_path(
+        path, split_name, postfix + BAND_PREFIX + "*", META_PATH
+    )
     d = {}
     for filename in gfile.Glob(full_path):
       band_position = filename.rindex(BAND_PREFIX) + len(BAND_PREFIX)
@@ -467,26 +470,6 @@ def load_json(path, split_name=None, postfix=None, as_cd=False,
   if as_cd:
     return ml_collections.ConfigDict(d)
   return d
-
-
-def standardized_path(path, split_name=None, postfix=None):
-  """Constructs/adjusts full path for json file."""
-  # To use a standardized way with TFDS version:
-  #   standardized_path(tfds_info.full_name, split_name)
-  # Optionally add a postfix, eg. var name or number of sampled elements.
-  if not path.startswith("/"):
-    path = path.replace(":", "/")  # In case it's a tfds name string.
-    path = os.path.join(META_PATH, path)
-  if split_name:
-    path = os.path.join(path, split_name)
-  if postfix:
-    if path.endswith("/"):
-      path = os.path.join(path, postfix)
-    else:
-      path = f"{path}_{postfix}"
-  if not path.endswith(".json"):
-    path += ".json"
-  return path
 
 
 def hist_quantile(x, b, quantiles):

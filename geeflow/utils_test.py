@@ -72,6 +72,15 @@ class CommonTest(parameterized.TestCase):
     self.assertEqual(dict(utils.parse_arg(arg, lazy=True, **spec)),
                      expected)
 
+  def test_standardized_path(self):
+    path = utils.standardized_path(
+        "planted/x:0.0.1",
+        split_name="test",
+        postfix="100n",
+    )
+    expected = "planted/x/0.0.1/test_100n.json"
+    self.assertEqual(expected, path)
+
 
 if __name__ == "__main__":
   absltest.main()

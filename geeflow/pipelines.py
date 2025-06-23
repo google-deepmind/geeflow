@@ -43,8 +43,7 @@ IC_SAMPLE_DATE_RANGES = ["Landsat7", "Landsat8", "Sentinel1", "Sentinel2",
                          "Alos", "ModisTerraVeg", "ModisSurfRefl", "ModisGPP",
                          "ModisET", "ModisBurn", "ModisFire", "FIRMS",
                          "WorldPop", "DynamicWorld"]
-IC_SAMPLE = ["Nicfi", "CIESIN", "GHSPop"]
-RGB_IC_SAMPLE = ["NAIP"]
+IC_SAMPLE = ["Nicfi", "CIESIN", "GHSPop", "NAIP"]
 SAMPLE_ROI = ["NasaDem", "WorldCover", "FPP", "TPP", "Hansen", "LandCover",
               "WSF2015", "TreeCoverLossDueToFire", "CopDem", "FABDEM",
               "CustomImage", "Primary"]
@@ -52,7 +51,6 @@ FC_GET = ["Countries"]
 
 ALGO_MAP = {k: ee_algo.ic_sample_date_ranges for k in IC_SAMPLE_DATE_RANGES}
 ALGO_MAP |= {k: ee_algo.ic_sample for k in IC_SAMPLE}
-ALGO_MAP |= {k: ee_algo.rgb_ic_sample for k in RGB_IC_SAMPLE}
 ALGO_MAP |= {k: ee_algo.sample_roi for k in SAMPLE_ROI}
 ALGO_MAP |= {k: ee_algo.fc_get for k in FC_GET}
 ALGO_MAP["CCDC"] = ee_algo.get_ccdc
@@ -333,37 +331,35 @@ def get_requests_fn(
           asset = asset.filterDate(start, end)
 
       algo = get_algo_from_config(config, name)
+      algo_name = algo.__name__  # pytype: disable=attribute-error
       split_dates_into_separate_requests = cfg.get(
           "split_dates_into_separate_requests", False)
       asset_ims = []
-      if algo == ee_algo.get_ccdc:
+      if algo_name == "get_ccdc":
         ccdc_im = algo(asset, roi, bands=cfg.get("select"), **kw)
         rename_fn = functools.partial(
             lambda b, n: ee.String(n + "_").cat(ee.String(b)), n=name
         )
         ccdc_im = ccdc_im.rename(ccdc_im.bandNames().map(rename_fn))
         asset_ims.append(ccdc_im)
-      elif algo == ee_algo.sample_roi:
+      elif algo_name == "sample_roi":
         asset_ims.append(_add_mask_and_rename(asset, name, "", mask_value))
-      elif algo in [
-          ee_algo.ic_sample,
-          ee_algo.rgb_ic_sample,
-          ee_algo.ic_sample_date_ranges,
-      ]:
-        kw["limit"] = cfg.get("limit")
-        if algo in [ee_algo.ic_sample_date_ranges, ee_algo.ic_sample]:
-          kw_name = "date_range" if algo == ee_algo.ic_sample else "date_ranges"
-          value = cfg.get(kw_name)
-          if fn := cfg.get(f"{kw_name}_fn"):
-            if value:
-              raise ValueError(f"Both {kw_name} and {kw_name}_fn are set.")
-            # Usage example for `ic_sample_date_ranges`:
-            # c.l7_v2.date_ranges_fn = functools.partial(
-            #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
-            value = fn(item)
-          kw[kw_name] = value
+      elif algo_name in ["ic_sample", "ic_sample_date_ranges"]:
+        # TODO: Cleanup the code so that we only have one 'limit'
+        # setting.
+        kw["limit"] = cfg.get("limit", kw.get("limit"))
+        kw_name = "date_range" if algo_name == "ic_sample" else "date_ranges"
+        value = cfg.get(kw_name)
+        if fn := cfg.get(f"{kw_name}_fn"):
+          if value:
+            raise ValueError(f"Both {kw_name} and {kw_name}_fn are set.")
+          # Usage example for `ic_sample_date_ranges`:
+          # c.l7_v2.date_ranges_fn = functools.partial(
+          #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
+          value = fn(item)
+        kw[kw_name] = value
 
-        if algo == ee_algo.ic_sample_date_ranges:
+        if algo_name == "ic_sample_date_ranges":
           kw["dummy_im"] = _get_dummy_im(asset, cfg)
           kw["bands"] = cfg.get("select_final")
           kw["scale"] = scale
@@ -375,16 +371,18 @@ def get_requests_fn(
             _add_mask_and_rename(im, name, f"#{t}", mask_value)
             for t, im in enumerate(ims)
         ]
-      elif algo == ee_algo.ic_sample_reduced:
+      elif algo_name == "ic_sample_reduced":
         dummy_im = _get_dummy_im(asset, cfg)
         im = algo(roi, asset, dummy_im=dummy_im, scale=scale, **kw)
         asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
-      elif algo == ee_algo.fc_get:
+      elif algo_name == "fc_get":
         metadata |= {f"{name}_{p}": v for p, v in
                      algo(asset, roi, cfg["select"]).items()}
-      elif algo == ee_algo.fc_to_image:
+      elif algo_name == "fc_to_image":
         im = algo(asset, roi, props=cfg.get("select"), **kw)
         asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
+      else:
+        raise ValueError(f"Unsupported algo: {algo_name}")
 
       if asset_ims:
         if split_dates_into_separate_requests:
@@ -401,10 +399,11 @@ def get_requests_fn(
           # without a fixed number of timesteps, the names of the bands changes
           # to include the timestep index, meaning that the names of the bands
           # are not fixed for each request.
-          fixed_bands = algo not in [ee_algo.ic_sample, ee_algo.rgb_ic_sample]
+          fixed_bands = algo != ee_algo.ic_sample
           requests.append(
               Request(asset_im, roi, scale, name, cfg.get("crs"), fixed_bands)
           )
+    assert requests, f"No requests generated for {item}."
     return requests, metadata
 
   return _request_fn

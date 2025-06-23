@@ -24,7 +24,6 @@ python -m geeflow.export_beam_tfds \
 
 import copy
 import hashlib
-import math
 
 from absl import app
 from absl import flags
@@ -119,167 +118,9 @@ class CreateData(beam.DoFn):
     return label_items
 
 
-def _has_forest_loss(feature):
-  return np.max(np.array(feature["hansen"])[..., 1]) > 0
-
-
-def apply_filters(feature, config):
-  export_config = config.get("export", {})
-  if export_config.get("filter_empty_forest_loss", False):
-    if not _has_forest_loss(feature):
-      return False
-  if keys := export_config.get("filter_empty_sequences", []):
-    keys = [keys] if isinstance(keys, str) else keys
-    for key in keys:
-      if not feature[key]:
-        return False
-  return True
-
-
-def generate_ccdc(data, config, key: str):
-  """Generates CCDC data in [T,H,W,C] format."""
-  assert f"{key}_tStart" in data
-  start_dates = np.array(data[f"{key}_tStart"])
-  h = start_dates.shape[0]
-  w = start_dates.shape[1]
-  year_from = config["from"]
-  year_to = config["to"]
-  ignore_tstart = config.get("ignore_tstart", False)
-  num_bands = 0
-  ccdc_features = {}
-  for k, v in data.items():
-    if not k.startswith(f"{key}_"): continue
-    if ignore_tstart and k == f"{key}_tStart": continue
-    nv = np.array(v)
-    ccdc_features[k] = nv
-    if len(nv.shape) == 3:
-      num_bands += 1
-    else:
-      num_bands += nv.shape[-1]
-  ccdc = np.zeros((year_to - year_from + 1, h, w, num_bands), dtype=np.float32)
-  ccdc_mask = np.ones(ccdc.shape, dtype=np.bool_)
-
-  for x in range(h):
-    for y in range(w):
-      dates = start_dates[x, y]
-      num_segments = dates.shape[0]
-      segment_pos = 0
-      previous_segment_pos = -1
-      for year in range(year_from, year_to + 1):
-        while (segment_pos + 1 < num_segments and
-               year + 0.5 >= dates[segment_pos + 1] and
-               dates[segment_pos + 1] > 0):
-          segment_pos += 1
-        if dates[segment_pos] == 0:
-          # There's no data (value should be fractional year) -> mask out.
-          ccdc_mask[year - year_from, x, y] = np.zeros_like(
-              ccdc_mask[year - year_from, x, y])
-        else:
-          if previous_segment_pos == segment_pos:
-            # No need to recompute, the segment didn't change.
-            # Copy previous value.
-            ccdc[year - year_from, x, y] = ccdc[year - year_from - 1, x, y]
-          else:
-            a = []
-            for v in ccdc_features.values():
-              if len(v.shape) == 3:
-                a.append(v[x, y, segment_pos])
-              else:
-                a.extend(v[x, y, segment_pos])
-
-            ccdc[year - year_from, x, y] = a
-            previous_segment_pos = segment_pos
-  if "year_selection" in config:
-    ccdc = ccdc[config["year_selection"]]
-    ccdc_mask = ccdc_mask[config["year_selection"]]
-  return ccdc, ccdc_mask
-
-
-def apply_transforms(feature, config, cropped_features_counter=None):
-  """Apply transforms to feature."""
-  for key, value in config.sources.items():
-    if key.startswith("ccdc"):
-      keys = [x for x in feature.keys() if x.startswith(f"{key}_")]
-      feature[key], feature[f"{key}_mask"] = generate_ccdc(
-          feature, value.format_config, key)
-      for k in keys:
-        del feature[k]
-
-  default_image_width = config.labels.img_width_m
-  for key, value in config.sources.items():
-    if value.get("scalar", False): continue
-    image_width = value.get("img_width_m", default_image_width)
-    scale = value.get("scale", None)
-    if not scale: continue
-    assert image_width >= scale, f"{key}: {image_width} < {scale}"
-    if isinstance(scale, float):
-      s = math.ceil(image_width / scale)
-      assert abs(s  * scale - image_width) < 1e-6
-    else:
-      if config.labels.get("use_utm", True):
-        assert image_width % scale == 0, f"{key}: {image_width} % {scale} != 0"
-        s = image_width // scale
-      else:
-        s = math.ceil(image_width / scale)
-
-    for sub_key in [key, f"{key}_mask"]:
-      data = np.array(feature[sub_key])
-      # The expected data format is [H, W, C] or [T, H, W, C]. Even if C==1.
-      if len(data.shape) != 4 and len(data.shape) != 3: continue
-      if data.shape[-3] != s or data.shape[-2] != s:
-        if cropped_features_counter:
-          cropped_features_counter.inc()
-        logging.info("Cropping %s from %s to %s", sub_key, data.shape, s)
-        assert data.shape[-3] == s or data.shape[-3] == s + 1, sub_key
-        assert data.shape[-2] == s or data.shape[-2] == s + 1, sub_key
-        feature[sub_key] = data[
-            ...,
-            data.shape[-3] // 2 - s // 2 : data.shape[-3] // 2 + s - s // 2,
-            data.shape[-2] // 2 - s // 2 : data.shape[-2] // 2 + s - s // 2,
-            :]
-  return feature
-
-
-def _process_example(x, config):
-  """Process a single example."""
-  for k in config.get("skip_keys", []) + ["split"]:
-    x.pop(k, None)
-  out = {}
-  for k, v in x.items():
-    dtype = None
-    if k.endswith("_mask") or k == "hr":
-      dtype = np.uint8
-    elif config.sources.get(k):
-      dtype = config.sources[k].get("dtype")
-    t = np.array(v, dtype=dtype)
-    # Automatically convert data to float (even if array is empty).
-    # Exceptions are:
-    #  - !"dtype is None" - predetermined types
-    #  - !"isinstance(t.flat[0], np.integer)" - don't touch non int types
-    #  - !"in ignore_for_float_conversion" - keys in the exception list
-    if (dtype is None and
-        (not t.size or (isinstance(t.flat[0], np.integer) or
-                        isinstance(t.flat[0], np.float64))) and
-        k not in config.sources.get("ignore_for_float_conversion", []) and
-        k not in config.labels.get("ignore_for_float_conversion", [])):
-      t = t.astype(np.float32)
-    if t.shape:
-      out[k] = t
-    else:
-      # Keep scalars as they are.
-      out[k] = v
-  tfds_id_keys = config.labels.get("tfds_id_keys", ("id",))
-  key = "-".join(map(str, (x[k] for k in tfds_id_keys)))
-  return (key, out)
-
-
 def _get_metadata_keys(config: ml_collections.ConfigDict) -> list[str]:
   """Returns a list of metadata keys to be exported."""
-  ee_algos_with_ts = [
-      ee_algo.ic_sample,
-      ee_algo.rgb_ic_sample,
-      ee_algo.ic_sample_date_ranges,
-  ]
+  ee_algos_with_ts = [ee_algo.ic_sample, ee_algo.ic_sample_date_ranges]
 
   metadata_keys = []
   for name, cfg in config.sources.items():
@@ -307,7 +148,7 @@ def _is_time_varying_algo(
   return (source_ee_algo or default_ee_algo) == ee_algo.ic_sample
 
 
-def get_split_tuples(splits):
+def _get_split_tuples(splits):
   """Constructs split tuples of TFDS split names and split names in data."""
   split_tuples = []
   for split in splits:
@@ -371,7 +212,7 @@ class TFDSBuilder(tfds.core.GeneratorBasedBuilder):
     """Returns SplitGenerators."""
     if self.splits and self.splits[0]:
       return {split: self._generate_examples(split_name)
-              for (split, split_name) in get_split_tuples(self.splits)}
+              for (split, split_name) in _get_split_tuples(self.splits)}
     else:
       return {"full": self._generate_examples("full")}
 
@@ -394,13 +235,19 @@ class TFDSBuilder(tfds.core.GeneratorBasedBuilder):
             self.query_bytes_distribution,
             self.query_sleep_distribution,
             add_retries_counters=True))
-        | "Filter" >> beam.Filter(apply_filters, self.config)
-        | "Transform" >> beam.Map(apply_transforms, self.config,
+        | "Filter" >> beam.Filter(ee_export_utils.apply_filters, self.config)
+        | "Transform" >> beam.Map(ee_export_utils.apply_transforms, self.config,
                                   self.num_cropped_features))
     if post_process_map := self.config.get("post_process_map"):
-      tfds_pipe |= f"Posterprocess {split}" >> beam.ParDo(post_process_map)
+      if isinstance(post_process_map, beam.DoFn):
+        pp_pipe = beam.ParDo(post_process_map)
+      elif callable(post_process_map):
+        pp_pipe = beam.Map(post_process_map)
+      else:
+        raise ValueError(f"Unsupported post_process_map: {post_process_map}")
+      tfds_pipe |= f"Posterprocess {split}" >> pp_pipe
     return tfds_pipe | f"Process {split}" >> beam.Map(
-        _process_example, self.config
+        ee_export_utils.process_example, self.config
     )
 
 
@@ -414,24 +261,8 @@ def make_tfds_features(config):
   config.labels.path = paths[0]
   labels = pipelines.pipeline_labels(config)
   assert labels
-  get_info = ee_export_utils.GetInfo(FLAGS.ee_project, config)
-  get_info.start_bundle()
-  feature_data = next(get_info.process(labels[0]))
-  feature_data = apply_transforms(feature_data, config)
-  if post_process_map := config.get("post_process_map"):
-    if isinstance(post_process_map, beam.DoFn):
-      post_process_map.setup()
-      post_process_map.start_bundle()
-      # Assuming that the post_process_map.process function takes `flush` makes
-      # things significantly simpler for the inference pipe, which constructs
-      # batches of data and the finish bundle returns
-      # `beam.transforms.window.WindowedValue` objects instead of dict.
-      feature_data = next(post_process_map.process(feature_data, flush=True))
-    elif callable(post_process_map):
-      feature_data = post_process_map(feature_data)
-    else:
-      raise ValueError(f"Unsupported post_process_map: {post_process_map}")
-  _, data = _process_example(feature_data, config)
+  data = ee_export_utils.process_single_item(labels[0], config,
+                                             FLAGS.ee_project)
   out = {}
 
   metadata_keys = _get_metadata_keys(config)

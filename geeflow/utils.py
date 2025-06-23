@@ -225,3 +225,30 @@ def get_source_config(module: str, out: str) -> mlc.ConfigDict:
       sampling_kw={},
       scale=None,
   )
+
+
+def standardized_path(
+    path,
+    split_name=None,
+    postfix=None,
+    default_dir=None,
+    file_extension=".json",
+):
+  """Constructs/adjusts full path for files."""
+  # To use a standardized way with TFDS version:
+  #   standardized_path(tfds_info.full_name, split_name)
+  # Optionally add a postfix, eg. var name or number of sampled elements.
+  if not path.startswith("/"):
+    path = path.replace(":", "/")  # In case it's a tfds name string.
+    if default_dir is not None:
+      path = os.path.join(default_dir, path)
+  if split_name:
+    path = os.path.join(path, split_name)
+  if postfix:
+    if path.endswith("/"):
+      path = os.path.join(path, postfix)
+    else:
+      path = f"{path}_{postfix}"
+  if not path.endswith(file_extension):
+    path += file_extension
+  return path

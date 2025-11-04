@@ -24,6 +24,17 @@ import numpy as np
 
 class EeDataTest(parameterized.TestCase):
 
+  @mock.patch.object(ee_data, "ee")
+  def test_qiu_disturbance(self, mock_ee):
+    qiu = ee_data.QiuDisturbance()
+    self.assertEqual(
+        qiu.asset_name, "users/ShiQiu/product/conus/disturbance/v081/APRI"
+    )
+    _ = qiu.im  # Call property to trigger the function execution.
+    self.assertGreater(mock_ee.ImageCollection.call_count, 0)
+    self.assertGreater(mock_ee.Image.call_count, 0)
+    self.assertGreater(mock_ee.Reducer.sum.call_count, 0)
+
   @parameterized.parameters(("L2A", "COPERNICUS/S2_SR_HARMONIZED"),
                             ("L1C", "COPERNICUS/S2_HARMONIZED"),)
   @mock.patch.object(ee_data, "ee")

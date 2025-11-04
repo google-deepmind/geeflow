@@ -46,7 +46,7 @@ IC_SAMPLE_DATE_RANGES = ["Landsat7", "Landsat8", "Sentinel1", "Sentinel2",
 IC_SAMPLE = ["Nicfi", "CIESIN", "GHSPop", "NAIP"]
 SAMPLE_ROI = ["NasaDem", "WorldCover", "FPP", "TPP", "Hansen", "LandCover",
               "WSF2015", "TreeCoverLossDueToFire", "CopDem", "FABDEM",
-              "CustomImage", "Primary"]
+              "CustomImage", "Primary", "EnglandLidarDem"]
 FC_GET = ["Countries"]
 
 ALGO_MAP = {k: ee_algo.ic_sample_date_ranges for k in IC_SAMPLE_DATE_RANGES}
@@ -61,7 +61,7 @@ class Request:
   """A data request for Earth Engine."""
   image: ee.Image
   roi: ee.Geometry
-  scale: int
+  scale: float
   name: str
   crs: str | None = None
   fixed_band_names: bool = True
@@ -144,6 +144,11 @@ def pipeline_item_to_roi(
       roi = coords.UtmGridMapping(item["utm_zone"], max_cell_size, img_size,
                                   img_size, item["utm_x_min"],
                                   item["utm_y_min"])
+    elif all(x in item for x in ["utm_x", "utm_y", "utm_zone"]):
+      roi = coords.UtmGridMapping(item["utm_zone"],
+                                  max_cell_size, img_size, img_size,
+                                  item["utm_x"] - img_width / 2,
+                                  item["utm_y"] - img_width / 2)
     else:
       roi = coords.UtmGridMapping.from_latlon_center(
           item["lat"], item["lon"], max_cell_size, img_size)
@@ -336,6 +341,10 @@ def get_requests_fn(
           "split_dates_into_separate_requests", False)
       asset_ims = []
       if algo_name == "get_ccdc":
+        if (("year_selection" in (fmt := cfg.get("format_config", {}))) and
+            (len(fmt["year_selection"]) != fmt["to"] - fmt["from"] + 1)):
+          raise ValueError("`year_selection` mask should include all years "
+                           "between `from` and `to`.")
         ccdc_im = algo(asset, roi, bands=cfg.get("select"), **kw)
         rename_fn = functools.partial(
             lambda b, n: ee.String(n + "_").cat(ee.String(b)), n=name
@@ -372,6 +381,12 @@ def get_requests_fn(
             for t, im in enumerate(ims)
         ]
       elif algo_name == "ic_sample_reduced":
+        if fn := cfg.get("date_range_fn"):
+          # Usage example for `ic_sample_date_ranges`:
+          # c.l7_v2.date_range_fn = functools.partial(
+          #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
+          kw["date_range"] = fn(item)
+
         dummy_im = _get_dummy_im(asset, cfg)
         im = algo(roi, asset, dummy_im=dummy_im, scale=scale, **kw)
         asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))

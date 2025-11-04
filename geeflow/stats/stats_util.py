@@ -342,7 +342,7 @@ class CounterAccumulator(StatsAccumulator):
     return None if self.bins_iqr is None else self.bins_iqr / 1.349
 
   def mask(self, values, recompute=False):
-    """Moves counter for mask value to a separete counter."""
+    """Moves counter for mask value to a separate counter."""
     if not isinstance(values, (tuple, list)):
       values = [values]
     for value in values:

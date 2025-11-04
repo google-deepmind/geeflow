@@ -18,7 +18,6 @@ import collections
 from collections.abc import Sequence
 import functools
 import io
-import itertools
 import math
 import re
 import time
@@ -26,6 +25,8 @@ from typing import Any
 
 from absl import logging
 import apache_beam as beam
+from geeflow import ccdc_utils
+from geeflow import coords
 from geeflow import ee_algo
 from geeflow import pipelines
 from geeflow import times
@@ -42,23 +43,6 @@ _MAX_RETRIES = 5
 _INITIAL_RETRY_SLEEP_TIMEOUT_SECS = 0.5
 _RETRY_SLEEP_TIMEOUT_MULTIPLIER = 2
 _MAX_HEADER_SIZE = 100_000
-
-_CCDC_BANDS = [
-    "BLUE",
-    "GREEN",
-    "NIR",
-    "RED",
-    "SWIR1",
-    "SWIR2",
-    "changeProb",
-    "numObs",
-    "tBreak",
-    "tEnd",
-    "tStart",
-]
-_CCDC_PROP = ["", "_coefs", "_magnitude", "_rmse"]
-_MAX_CCDC_SEGMENTS = 100
-_CCDC_DIM = 8
 
 
 _USER_MEM_LOG = (
@@ -121,7 +105,7 @@ def get_utm_zones():
 
 
 class GetInfo(beam.DoFn):
-  """Beam DoFn to extract necessary info and emit features one by one."""
+  """Beam DoFn to extract necessary info and features one by one."""
 
   def __init__(
       self,
@@ -170,7 +154,7 @@ class GetInfo(beam.DoFn):
     res = {}
     for split in np.array_split(bands, num_splits):
       res |= self._query(exp.select(list(map(str, split))))
-    # The -1 value corresponds to spliting bands individually.
+    # The -1 value corresponds to splitting bands individually.
     counter_key = -1 if len(bands) == num_splits else num_splits
     if self.retries_counters is not None:
       self.retries_counters.setdefault(
@@ -244,7 +228,7 @@ class GetInfo(beam.DoFn):
 
     raise RuntimeError(
         f"EE query failed after {_MAX_RETRIES} retries for item: {item} with"
-        f" exceptions: {exceptions}."
+        f" exceptions: {exceptions} for request: {request}."
     )
 
   def process(self, item):
@@ -270,23 +254,10 @@ class GetInfo(beam.DoFn):
 
 def _process_ee_query_result(pixels, metadata, config) -> dict[str, np.ndarray]:
   """Format EE query result."""
-  # Process CCDC data.
   ccdc_pixels = {}
-  for k in config.sources:
+  for k, v in config.sources.items():
     if pipelines.get_algo_from_config(config, k) == ee_algo.get_ccdc:
-      for b, c in itertools.product(_CCDC_BANDS, _CCDC_PROP):
-        if f"{k}_{b}{c}#0#0" not in pixels:
-          continue
-        tmp = [
-            [
-                pixels.pop(f"{k}_{b}{c}#{j}#{i}")
-                for j in range(_MAX_CCDC_SEGMENTS)
-                if f"{k}_{b}{c}#{j}#{i}" in pixels
-            ]
-            for i in range(_CCDC_DIM)
-            if f"{k}_{b}{c}#0#{i}" in pixels
-        ]
-        ccdc_pixels[f"{k}_{b}{c}"] = np.transpose(tmp, (2, 3, 1, 0)).squeeze()
+      ccdc_pixels |= ccdc_utils.get_ccdc_pixels(pixels, v, k)
 
   # Concatenate the channels from the same source on the last dimension.
   tmp = collections.defaultdict(list)
@@ -297,6 +268,7 @@ def _process_ee_query_result(pixels, metadata, config) -> dict[str, np.ndarray]:
 
   # Concatenate timesteps from same source on the first dimension.
   tmp = collections.defaultdict(list)
+  tmp_temporal = collections.defaultdict(dict)
   for source in sorted(pixels):
     # Non temporal sources are not marked with a "#".
     if "#" not in source:
@@ -304,7 +276,11 @@ def _process_ee_query_result(pixels, metadata, config) -> dict[str, np.ndarray]:
     # Temporal sources. Note that we are guaranteed the correct temporal
     # ordering since computePixels requests are made in the correct order.
     else:
-      tmp[source.split("#")[0]].append(pixels.pop(source))
+      name, idx = source.split("#")
+      tmp_temporal[name][int(idx)] = pixels.pop(source)
+  for name, data in tmp_temporal.items():
+    for k in sorted(data):
+      tmp[name].append(data[k])
   pixels = toolz.valmap(np.array, tmp)
 
   # Ensure that assets with variable number of timesteps are in the right
@@ -348,72 +324,14 @@ def apply_filters(feature, config):
   return True
 
 
-def generate_ccdc(data, config, key: str):
-  """Generates CCDC data in [T,H,W,C] format."""
-  assert f"{key}_tStart" in data
-  start_dates = np.array(data[f"{key}_tStart"])
-  h = start_dates.shape[0]
-  w = start_dates.shape[1]
-  year_from = config["from"]
-  year_to = config["to"]
-  ignore_tstart = config.get("ignore_tstart", False)
-  num_bands = 0
-  ccdc_features = {}
-  for k, v in data.items():
-    if not k.startswith(f"{key}_"): continue
-    if ignore_tstart and k == f"{key}_tStart": continue
-    nv = np.array(v)
-    ccdc_features[k] = nv
-    if len(nv.shape) == 3:
-      num_bands += 1
-    else:
-      num_bands += nv.shape[-1]
-  ccdc = np.zeros((year_to - year_from + 1, h, w, num_bands), dtype=np.float32)
-  ccdc_mask = np.ones(ccdc.shape, dtype=np.bool_)
-
-  for x in range(h):
-    for y in range(w):
-      dates = start_dates[x, y]
-      num_segments = dates.shape[0]
-      segment_pos = 0
-      previous_segment_pos = -1
-      for year in range(year_from, year_to + 1):
-        while (segment_pos + 1 < num_segments and
-               year + 0.5 >= dates[segment_pos + 1] and
-               dates[segment_pos + 1] > 0):
-          segment_pos += 1
-        if dates[segment_pos] == 0:
-          # There's no data (value should be fractional year) -> mask out.
-          ccdc_mask[year - year_from, x, y] = np.zeros_like(
-              ccdc_mask[year - year_from, x, y])
-        else:
-          if previous_segment_pos == segment_pos:
-            # No need to recompute, the segment didn't change.
-            # Copy previous value.
-            ccdc[year - year_from, x, y] = ccdc[year - year_from - 1, x, y]
-          else:
-            a = []
-            for v in ccdc_features.values():
-              if len(v.shape) == 3:
-                a.append(v[x, y, segment_pos])
-              else:
-                a.extend(v[x, y, segment_pos])
-
-            ccdc[year - year_from, x, y] = a
-            previous_segment_pos = segment_pos
-  if "year_selection" in config:
-    ccdc = ccdc[config["year_selection"]]
-    ccdc_mask = ccdc_mask[config["year_selection"]]
-  return ccdc, ccdc_mask
-
-
 def apply_transforms(feature, config, cropped_features_counter=None):
   """Apply transforms to feature."""
   for key, value in config.sources.items():
     if key.startswith("ccdc"):
       keys = [x for x in feature.keys() if x.startswith(f"{key}_")]
-      feature[key], feature[f"{key}_mask"] = generate_ccdc(
-          feature, value.format_config, key)
+      feature[key], ccdc_mask = ccdc_utils.generate_ccdc(feature, value, key)
+      if ccdc_mask is not None:
+        feature[f"{key}_mask"] = ccdc_mask[..., None]
       for k in keys:
         del feature[k]
 
@@ -435,6 +353,8 @@ def apply_transforms(feature, config, cropped_features_counter=None):
         s = math.ceil(image_width / scale)
 
     for sub_key in [key, f"{key}_mask"]:
+      if sub_key.endswith("_mask") and sub_key not in feature:
+        continue
       data = np.array(feature[sub_key])
       # The expected data format is [H, W, C] or [T, H, W, C]. Even if C==1.
       if len(data.shape) != 4 and len(data.shape) != 3: continue
@@ -461,6 +381,8 @@ def process_example(x, config):
     dtype = None
     if k.endswith("_mask") or k == "hr":
       dtype = np.uint8
+    elif k.endswith("_timestamps"):
+      dtype = np.int64
     elif config.sources.get(k):
       dtype = config.sources[k].get("dtype")
     t = np.array(v, dtype=dtype)
@@ -504,6 +426,8 @@ def process_single_item(
       # batches of data and the finish bundle returns
       # `beam.transforms.window.WindowedValue` objects instead of dict.
       feature_data = next(post_process_map.process(feature_data, flush=True))
+    elif isinstance(post_process_map, beam.ParDo):
+      feature_data = next(post_process_map.dofn.process(feature_data))
     elif callable(post_process_map):
       feature_data = post_process_map(feature_data)
     else:
@@ -524,6 +448,10 @@ def fetch_data(
     bands: Sequence[str] = (),
 ) -> tuple[np.ndarray, dict[str, Any]]:
   """Fetches data from Earth Engine for a given location and time range.
+
+  The data is fetched for a bbox of size `img_width_m`x`img_width_m` centered
+  at the given lat/lon with `img_width_m`/`resolution` pixel size. The bbox is
+  not necessarily aligned with the UTM resolution grid.
 
   Args:
     lat: Latitude of the center of the region to fetch.
@@ -552,13 +480,19 @@ def fetch_data(
       labels=dict(img_width_m=img_width_m, max_cell_size_m=resolution),
   )
   if bands:
+    cfg.sources.collection.select = bands
     cfg.sources.collection.select_final = bands
   if start_date:
     cfg.sources.collection.start_date = start_date
   if end_date:
     cfg.sources.collection.end_date = end_date
 
+  geotransform_info = coords.get_geotransform_info(
+      lat, lon, img_width_m, resolution
+  )
+
   data = process_single_item(dict(lat=lat, lon=lon, id=0), cfg)
   dates = list(map(times.to_datestr, data["collection_timestamps"].astype(int)))
-  metadata = dict(mask=data["collection_mask"], dates=dates)
+  metadata = dict(mask=data["collection_mask"], dates=dates) | geotransform_info
+
   return data["collection"], metadata

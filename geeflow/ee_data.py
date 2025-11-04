@@ -92,7 +92,7 @@ class EeDataFC(EeData, abc.ABC):
 class Sentinel1(EeData):
   """Sentinel-1 datasets (GRD).
 
-  - It is recommended not to combining ascending and descencing data. Usually it
+  - It is recommended not to combining ascending and descending data. Usually it
     is location dependent, but ideally one would filter out minority orbit.
   - Most of the Earth was imaged with VV+VH polarization.
   """
@@ -222,7 +222,7 @@ class Sentinel2(EeData):
             leftField="system:index", rightField="system:index"))
     s2 = ee.ImageCollection(s2_fc).map(
         lambda x: x.addBands(ee.Image(x.get("cloud_prob"))).set(  # pylint: disable=g-long-lambda
-            "cloud_prob", "deleted"))  # At the end, reseting the property.
+            "cloud_prob", "deleted"))  # At the end, resetting the property.
     return s2
 
   @classmethod
@@ -289,13 +289,15 @@ class Landsat7(EeData):
     return np.clip((img - v_min) / (v_max - v_min), 0, 1)**gamma
 
   def filter_by_cloud_percentage(self, percentage):
-    # TODO Does one has to check that CLOUD_COVER != "-1"?
     # TODO What is the difference to CLOUD_COVER_LAND?
-    return self.ic.filter(f"CLOUD_COVER < {percentage}")
+    valid_cc_filter = ee.Filter.gte("CLOUD_COVER", 0)
+    cloud_percentage_filter = ee.Filter.lt("CLOUD_COVER", percentage)
+    combined_filter = ee.Filter.And(valid_cc_filter, cloud_percentage_filter)
+    return self.ic.filter(combined_filter)
 
   @classmethod
   def im_cloud_mask(cls, image):
-    """L7/8/5 image cloud mask."""
+    """L7/8/9/5 image cloud mask."""
     # https://developers.google.com/earth-engine/guides/ic_visualization#compositing
     qa_bitmask = int("11111", 2)  # Fill and cloud bits.
     is_cloud = image.select("QA_PIXEL").bitwiseAnd(qa_bitmask).neq(0)
@@ -306,16 +308,64 @@ class Landsat7(EeData):
 
 @dataclasses.dataclass
 class Landsat8(Landsat7):
-  """Landsat8 SR (Surface Reflectance) datasets (2013-03 to now)."""
+  """Landsat8 raw datasets (2013-03 to now)."""
   mode: str = "T1"
+  calibrate_radiance: bool = False
 
-  BANDS = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11",
-           "QA_PIXEL", "QA_RADSAT", "SAA", "SZA", "VAA", "VZA"]
+  BANDS = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+           "B11", "QA_PIXEL", "QA_RADSAT", "SAA", "SZA", "VAA", "VZA"]
   VIS_BANDS = ["B4", "B3", "B2"]
 
   @property
   def asset_name(self) -> str:
     return f"LANDSAT/LC08/C02/{self.mode}"
+
+  @property
+  def ic(self):
+    def _landsat_calibrated_radiance(image):
+      """Calculates calibrated radiance."""
+      metadata = image.select(
+          ["QA_PIXEL", "QA_RADSAT", "SAA", "SZA", "VAA", "VZA"]
+      )
+      radiance = ee.Algorithms.Landsat.calibratedRadiance(image)
+      return metadata.addBands(radiance)
+
+    ic = ee.ImageCollection(self.asset_name)
+    if self.mode == "T1" and self.calibrate_radiance:
+      # Raw data to calibrated radiance
+      ic = ic.map(_landsat_calibrated_radiance).select(self.BANDS)
+    return ic
+
+
+@dataclasses.dataclass
+class Landsat9(Landsat7):
+  """Landsat9 raw datasets (2021-10 to now)."""
+
+  mode: str = "T1"
+  calibrate_radiance: bool = False
+  BANDS = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+           "B11", "QA_PIXEL", "QA_RADSAT", "SAA", "SZA", "VAA", "VZA"]
+  VIS_BANDS = ["B4", "B3", "B2"]
+
+  @property
+  def asset_name(self) -> str:
+    return f"LANDSAT/LC09/C02/{self.mode}"
+
+  @property
+  def ic(self):
+    def _landsat_calibrated_radiance(image):
+      """Calculates calibrated radiance."""
+      metadata = image.select(
+          ["QA_PIXEL", "QA_RADSAT", "SAA", "SZA", "VAA", "VZA"]
+      )
+      radiance = ee.Algorithms.Landsat.calibratedRadiance(image)
+      return metadata.addBands(radiance)
+
+    ic = ee.ImageCollection(self.asset_name)
+    if self.mode == "T1" and self.calibrate_radiance:
+      # Raw data to calibrated radiance
+      ic = ic.map(_landsat_calibrated_radiance).select(self.BANDS)
+    return ic
 
 
 @dataclasses.dataclass
@@ -532,7 +582,7 @@ class Hansen(EeData):
   mode: str = "2022_v1_10"
 
   BANDS = ["treecover2000",  # Canopy cover percentage (trees > 5m) in 2000.
-           "loss", "gain",  # {0: no loss/gain, 1: loss/gain occured.}.
+           "loss", "gain",  # {0: no loss/gain, 1: loss/gain occurred}.
            "first_b30", "first_b40", "first_b50", "first_b70",
            "last_b30", "last_b40", "last_b50", "last_b70",
            # Red, NIR, SWIR-1, SWIR-2 bands for first and last years.
@@ -725,6 +775,106 @@ class GediRasterAGB(EeData):
                 .updateMask(im.select("degrade_flag").eq(0)))
       ic = ic.map(quality_mask_fn)
     return ic
+
+
+@dataclasses.dataclass
+class QiuDisturbance(EeData):
+  """Qiu's US CONUS disturbance data (1988-2022).
+
+    Qiu, et al. 2025. “A Shift from Human-Directed to Undirected Wild Land
+    Disturbances in the USA.” Nature Geoscience 18 (10): 989-96.
+
+    US CONUS disturbance drivers at 30m resolution for 38 bands (1985-2022),
+    with driver values (0: no change, 1: Logging, 2: Construction,
+    3: Agriculture, 4: Stress, 5: Wind / geohazard, 6: Fire, 7: Water).
+    Note that predictions are only for 1985-2022; the first three years are used
+    only for time series initialization.
+  """
+  ref_year: int = 2020  # The year to use as a reference for forest age.
+
+  BANDS = [
+      "logging_events_count",  # Independent of the ref_year.
+      "avg_rotation_time",  # Independent of the ref_year.
+      "rotations_count",  # Independent of the ref_year.
+      "forest_age_after_logging",  # Age at ref_year.
+      "forest_age_after_disturbance",  # Age at ref_year.
+      "last_disturbance_driver",  # The last disturbance driver <= ref_year.
+  ]
+
+  @property
+  def asset_name(self) -> str:
+    return "users/ShiQiu/product/conus/disturbance/v081/APRI"
+
+  @property
+  def im(self):
+    start_year, num_bands = 1985, 38
+    assert (start_year < self.ref_year < start_year + num_bands)
+
+    years = ee.List([ee.String(str(start_year + i)) for i in range(num_bands)])
+    # 38 bands (1985-2022), with disturbance driver values.
+    disturbances = ee.ImageCollection(self.asset_name).mosaic().rename(years)
+
+    # 1. Number of logging events
+    logging = disturbances.eq(1)
+    logging_count = logging.reduce(ee.Reducer.sum())
+
+    # 2-4. Rotation lengths & Number of rotations
+    indices = ee.Image(ee.Array(
+        ee.List.sequence(0, num_bands - 1))).arrayMask(logging.toArray())
+    unmasked_indices = indices.unmask(
+        ee.Image(ee.Array(ee.List.repeat(0, num_bands))))
+    sorted_indices = unmasked_indices.arraySort()
+    indices_array = sorted_indices.arrayMask(sorted_indices.lt(num_bands))
+    shifted = indices_array.arraySlice(0, 1)
+    original = indices_array.arraySlice(0, 0, -1)
+    intervals = shifted.subtract(original).subtract(1)
+    avg_interval = intervals.arrayReduce(ee.Reducer.mean(), [0]).arrayGet(0)
+    num_intervals = intervals.arrayReduce(ee.Reducer.count(), [0]).arrayGet(0)
+
+    # 6. Get the driver of the latest disturbance event <= ref_year
+    selected_years = years.slice(0, self.ref_year-start_year + 1)
+
+    def get_change(band_name):
+      change_this_year = disturbances.select([band_name])
+      masked_change = change_this_year.updateMask(change_this_year.gt(0))
+      return masked_change.rename("last_change")
+
+    latest_driver = ee.ImageCollection(selected_years.map(get_change)).mosaic()
+
+    # 5. Get the forest age in ref_year
+    def get_year_of_last_change(band_name):
+      change_this_year = disturbances.select([band_name])
+      mask = change_this_year.gt(0)
+      year_value = ee.Number.parse(band_name).int16()
+      year_image = ee.Image.constant(year_value).int16()
+      return year_image.updateMask(mask).rename("year_of_last_change")
+
+    last_change_year = ee.ImageCollection(
+        selected_years.map(get_year_of_last_change)
+    ).mosaic()
+    years_since_last_disturbance = ee.Image.constant(self.ref_year).subtract(
+        last_change_year)
+
+    def get_year_of_last_logging(band_name):
+      year_value = ee.Number.parse(band_name).int16()
+      year_image = ee.Image.constant(year_value).int16()
+      mask = logging.select([band_name])
+      return year_image.updateMask(mask).rename("year_of_last_change")
+
+    last_logging_year = ee.ImageCollection(
+        selected_years.map(get_year_of_last_logging)
+    ).mosaic()
+    years_since_last_logging = ee.Image.constant(self.ref_year).subtract(
+        last_logging_year)
+
+    return ee.Image.cat([
+        logging_count.selfMask(),
+        avg_interval.updateMask(logging_count.gte(2)),
+        num_intervals.updateMask(logging_count.gte(2)),
+        years_since_last_logging,
+        years_since_last_disturbance,
+        latest_driver,
+    ]).rename(self.BANDS)
 
 
 @dataclasses.dataclass
@@ -933,7 +1083,7 @@ class GHSPop(EeData):
 class CCDC(EeData):
   """Google Global Landsat-based CCDC Segments (1999-2019)."""
   mode: str = "V1"
-  BANDS = ["tStart", "tEnd", "tBreak", "changeProb", "numObs", "BLUE_coefs",
+  BANDS = ["tStart", "tEnd", "tBreak", "numObs", "changeProb", "BLUE_coefs",
            "GREEN_coefs", "RED_coefs", "NIR_coefs", "SWIR1_coefs",
            "SWIR2_coefs", "BLUE_rmse", "GREEN_rmse", "RED_rmse", "NIR_rmse",
            "SWIR1_rmse", "SWIR2_rmse", "BLUE_magnitude", "GREEN_magnitude",
@@ -985,13 +1135,15 @@ class CustomFC(EeDataFC):
     asset_name: A name or a list of names of the assets to load.
     filters: A list of filters to apply to the asset.
     buffer_points: How many meters to buffer the point features.
+    buffer: How many meters to buffer all features (on top of buffer_points).
     use_bounds: Whether to use bounds instead of actual geometries.
     set_property: A tuple of (property_name, property_value) to set on the
       features.
   """
-  asset_name: list[str] | str = ""  # Needs to be specified.
-  filters: list[tuple[str, Any]] | None = None
+  asset_name: Sequence[str] | str = ""  # Needs to be specified.
+  filters: Sequence[tuple[str, Any]] | None = None
   buffer_points: int = 0
+  buffer: int = 0
   # NOTE: Currently ".bounds" methiod is very slow and could incurr very
   # significant slowdown. For more context, see:
   # (internal link)
@@ -1001,7 +1153,7 @@ class CustomFC(EeDataFC):
 
   @property
   def fc(self):
-    if isinstance(self.asset_name, list):
+    if isinstance(self.asset_name, (tuple, list)):
       fc = ee.FeatureCollection(
           [ee.FeatureCollection(x) if isinstance(x, str) else CustomFC(**x).fc
            for x in self.asset_name])
@@ -1039,6 +1191,9 @@ class CustomFC(EeDataFC):
       if self.use_bounds:
         fc_points = fc_points.map(lambda x: x.bounds())
       fc = ee.FeatureCollection([fc_points, fc_not_points]).flatten()
+    # NOTE: We allow for negative values too.
+    if self.buffer:
+      fc = fc.map(lambda x: x.buffer(self.buffer))
     if self.set_property:
       fc = fc.map(lambda x: x.set(self.set_property[0], self.set_property[1]))
     return fc

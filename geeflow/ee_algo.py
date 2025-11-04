@@ -17,10 +17,10 @@
 import collections
 from collections.abc import Callable, Sequence
 import datetime
-import functools
 from typing import Any
 
 from dateutil import relativedelta
+from geeflow import ccdc_utils
 import ml_collections
 import numpy as np
 
@@ -75,9 +75,10 @@ def _preprocess_ic(
 
 
 def fetch_image_collection_properties(
-    collection: ee.ImageCollection, additional_properties: Sequence[str] = ()
+    collection: ee.ImageCollection | ee.FeatureCollection,
+    additional_properties: Sequence[str] = (),
 ):
-  """Fetches the specified properties of all the images sorted by timestamp.
+  """Fetches properties of all the images, sorted by timestamp if available.
 
   Args:
     collection: The input image collection.
@@ -85,7 +86,7 @@ def fetch_image_collection_properties(
 
   Returns:
     List of dicts containing the retrieved properties for each image in the
-    collection.
+    collection sorted by timestamp if available.
   """
   properties = (*_SYSTEM_PROPERTIES, *additional_properties)
 
@@ -185,38 +186,6 @@ def fc_to_image(
   return im
 
 
-def _add_ccdc_bands_2d(ic, num_segments, im=None):
-  """Adds CCDC bands with shape (num_segments, 8)."""
-  zeros = ee.Array([0]).repeat(0, num_segments).repeat(1, 8)
-  for j in range(num_segments):
-    for i in range(8):
-      im_ji = (
-          ic.unmask(zeros, False)
-          .arrayCat(zeros, 0)
-          .float()
-          .arraySlice(0, 0, num_segments)
-          .arrayGet([j, i])
-      )
-      rename_fn = functools.partial(
-          lambda n, idx: ee.String(n).cat(ee.String(idx)), idx=f"#{j}#{i}"
-      )
-      im_ji = im_ji.rename(im_ji.bandNames().map(rename_fn))
-      im = im_ji if im is None else im.addBands(im_ji)
-  return im
-
-
-def _add_ccdc_bands_1d(ic, num_segments, im=None):
-  zeros = ee.Array([0]).repeat(0, num_segments)
-  for j in range(num_segments):
-    im_i = ic.unmask(zeros, False).arrayCat(zeros, 0).float().arrayGet(j)
-    rename_fn = functools.partial(
-        lambda n, idx: ee.String(n).cat(ee.String(idx)), idx=f"#{j}#0"
-    )
-    im_i = im_i.rename(im_i.bandNames().map(rename_fn))
-    im = im_i if im is None else im.addBands(im_i)
-  return im
-
-
 def get_ccdc(
     ic: ee.ImageCollection,
     roi: ee.Geometry,
@@ -235,7 +204,7 @@ def get_ccdc(
       be padded with zeros.
 
   Returns:
-    A dict of band names to ee.Array().
+    An image with CCDC bands.
   """
   ccdc = ic.filterBounds(roi)
   ccdc = ee.Image(
@@ -243,11 +212,11 @@ def get_ccdc(
   )
 
   bands_1d = [band for band in bands if not band.endswith("_coefs")]
-  im = _add_ccdc_bands_1d(ccdc.select(bands_1d), num_segments)
-
+  im = ccdc_utils.im_add_ccdc_bands_1d(ccdc.select(bands_1d), num_segments)
   bands_2d = [band for band in bands if band.endswith("_coefs")]
-  im = _add_ccdc_bands_2d(ccdc.select(bands_2d), num_segments, im)
-
+  if bands_2d:
+    im = ccdc_utils.im_add_ccdc_bands_2d(ccdc.select(bands_2d), num_segments,
+                                         im)
   assert im is not None
   return im
 
@@ -312,6 +281,16 @@ def get_ic_reduce_fn(
       raise ValueError(f"Reducer `{name}` not supported yet.")
     assert roi is not None
     def rr(im):
+      # When we fetch a huge plot (say 6400m x 6400m) and a source is at very
+      # high resolution (say 0.5m) and we use reduceResolutionTo* reducer,
+      # EE would fail with "Reprojection output too large (12800x12800 pixels)".
+      # In order to avoid this, we first preaggreate at a lower resolution with
+      # the same projection (which apparently does not trigger the check) and
+      # then reproject to the final scale.
+      if "pre_reduce_resolution" in kwargs:
+        im = im.reproject(im.projection().atScale(
+            kwargs["pre_reduce_resolution"])).reduceResolution(
+                reducer=reducer, maxPixels=4096)
       return im.reproject(roi.projection().atScale(
           im.projection().nominalScale())).reduceResolution(
               reducer=reducer, maxPixels=4096)
@@ -368,10 +347,15 @@ def ic_sample(
 ) -> tuple[Sequence[ee.Image], dict[str, np.ndarray]]:
   """Returns ROI samples for all filtered IC images."""
   ic = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
-                      filter_bounds, roi_filter_fn, limit=limit,
-                      date_range=date_range)
+                      filter_bounds, roi_filter_fn, date_range=date_range)
   ims, metadata = [], collections.defaultdict(list)
-  for prop in fetch_image_collection_properties(ic, additional_properties):
+  sorted_image_properties = fetch_image_collection_properties(
+      ic, additional_properties
+  )
+  if limit:
+    # We apply the limit by only keeping the `limit` most recent images.
+    sorted_image_properties = sorted_image_properties[-limit:]
+  for prop in sorted_image_properties:
     im_t = ic.filter(ee.Filter.eq(_ASSET_ID_PROP, prop[_ASSET_ID_PROP])).first()
     ims.append(im_t)
     metadata["timestamps"].append(prop[_TIMESTAMP_PROP])
@@ -395,11 +379,13 @@ def ic_sample_reduced(
     roi_filter_fn: Callable[..., ee.ImageCollection] | None = None,
     dummy_im: ee.Image | None = None,
     reduce_fn: str = "mosaic",
+    date_range: tuple[str, str] | None = None,
     **reduce_fn_kwargs,
 ) -> ee.Image:
   """Returns ROI samples reduced over the whole IC."""
   ic = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
-                      filter_bounds, roi_filter_fn, dummy_im)
+                      filter_bounds, roi_filter_fn, dummy_im,
+                      date_range=date_range)
   reduce_fn = get_ic_reduce_fn(reduce_fn, scale=scale, roi=roi,
                                **reduce_fn_kwargs)
   return reduce_fn(ic)

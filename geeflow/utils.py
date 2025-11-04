@@ -133,11 +133,11 @@ def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
     "false", "" to False).
 
   Args:
-    arg: the string argument that"s passed to get_config.
+    arg: the string argument that's passed to get_config.
     lazy: allow lazy parsing of arguments, which are not in spec. For these,
       the type is auto-extracted in dependence of most complex possible type.
     **spec: the name and default values of the expected options.
-      If the value is a tuple, the value"s first element is the default value,
+      If the value is a tuple, the value's first element is the default value,
       and the second element is a function called to convert the string.
       Otherwise the type is automatically extracted from the default value.
 
@@ -152,8 +152,8 @@ def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
 
   # Expand convenience-cases for a single parameter without = sign.
   if arg and "," not in arg and "=" not in arg:
-    # (think :runlocal) If it"s the name of sth in the spec (or there is no
-    # spec), it"s that in bool.
+    # (think :runlocal) If it's the name of sth in the spec (or there is no
+    # spec), it's that in bool.
     if arg in spec or not spec:
       arg = f"{arg}=True"
     # Otherwise, it is the value for the first entry in the spec.

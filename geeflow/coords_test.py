@@ -63,6 +63,26 @@ class CoordsTest(parameterized.TestCase):
     self.assertEqual(utm_grid_mapping.utm_x_min, 217710.0)
     self.assertEqual(utm_grid_mapping.utm_y_min, 124440.0)
 
+  @parameterized.parameters(
+      (1, -179.99),
+      (1, 179.99),
+  )
+  def test_longitudal_wrapping(self, lat, lon):
+    roi = coords.UtmGridMapping.from_latlon_center(lat, lon, 5000, 1, 1)
+    new_lat, new_lon = roi.centroid_latlon
+    print(roi.bbox_latlon)
+    np.testing.assert_allclose((new_lat, new_lon), (lat, lon), 1e-2, 1e-2)
+
+  def test_vectorization(self):
+    lat = -4
+    lon = 45
+    roi = coords.UtmGridMapping.from_latlon_center(lat, lon, 1, 1, 1)
+    new_lat, new_lon = coords.UtmGridMapping(
+        roi.utm_zone, 1, 1, 1,
+        np.array([roi.utm_x_min]),
+        np.array([roi.utm_y_min])).centroid_latlon
+    np.testing.assert_allclose((new_lat, new_lon), ([lat], [lon]), 1e-5, 1e-5)
+
   def test_utm_grid_mapping_from_bbox_fails_for_latlon(self):
     bbox = (-77.49, 1.177, -77.12, 1.26)
     with self.assertRaises(AssertionError):
@@ -84,6 +104,54 @@ class CoordsTest(parameterized.TestCase):
   def test_utm_to_epsg(self, utm_zone, expected_epsg):
     utm_grid = coords.UtmGridMapping(utm_zone, 1, 10, 10, 0, 0)
     self.assertEqual(expected_epsg, utm_grid.epsg)
+
+  @parameterized.parameters(
+      (
+          {"name": "ny1", "lat": 40.7128, "lon": -74.0060, "resolution": 1.0},
+          (583459.372324085, 1.0, 0, 4507850.998243321, 0, -1.0),
+          "EPSG:32618",
+      ),
+      (
+          {"name": "ny2", "lat": 40.7128, "lon": -74.0060, "resolution": 10.0},
+          (583459.372324085, 10.0, 0, 4507850.998243321, 0, -10.0),
+          "EPSG:32618",
+      ),
+      (
+          {"name": "ny3", "lat": 40.7128, "lon": -74.0060, "resolution": 0.5},
+          (583459.372324085, 0.5, 0, 4507850.998243321, 0, -0.5),
+          "EPSG:32618",
+      ),
+      (
+          {
+              "name": "London",
+              "lat": 51.5074,
+              "lon": -0.1278,
+              "resolution": 10.0,
+          },
+          (698816.2343119299, 10.0, 0, 5710663.758080996, 0, -10.0),
+          "EPSG:32630",
+      ),
+      (
+          {
+              "name": "Tokyo",
+              "lat": 35.6895,
+              "lon": 139.6917,
+              "resolution": 10.0,
+          },
+          (381122.23003942776, 10.0, 0, 3950798.9078813544, 0, -10.0),
+          "EPSG:32654",
+      ),
+  )
+  def test_get_geotransform_info(
+      self, test_case, expected_geotransform, expected_epsg
+  ):
+    lat, lon = test_case["lat"], test_case["lon"]
+    image_width, resolution = 1000.0, test_case["resolution"]
+    geotransform_info = coords.get_geotransform_info(
+        lat, lon, image_width, resolution
+    )
+    self.assertEqual(geotransform_info["geotransform"], expected_geotransform)
+    self.assertEqual(geotransform_info["epsg"], expected_epsg)
 
 
 if __name__ == "__main__":

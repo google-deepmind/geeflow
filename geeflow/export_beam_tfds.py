@@ -46,15 +46,14 @@ flags.DEFINE_string(
 flags.DEFINE_string(
     "ee_project",
     "computing-engine-190414:earth-engine@computing-engine-190414.iam.gserviceaccount.com",
-    "A ':' contatenation of a GCP project and a EE service account.")
+    "A ':' concatenation of a GCP project and a EE service account.")
 flags.DEFINE_string("output_dir", "", "Output directory")
 flags.DEFINE_string("tfds_name", "", "TFDS name, builder config name and "
                     "version (`name[/builder_config_name][:version]`).")
 flags.DEFINE_list("splits", "train,validation,test", "Splits to generate.")
 flags.DEFINE_string("split_column_name", "split", "Column to use for a split.")
 flags.DEFINE_integer("splits_s2_cell_level", 9, "S2 level for random splits.")
-flags.DEFINE_string("file_format", "array_record",
-                    "The format for the dataset files")
+flags.DEFINE_string("file_format", "bagz", "The format for the dataset files")
 flags.DEFINE_bool("nondeterministic_order", False,
                   "DownloadConfig.nondeterministic_order feature.")
 flags.DEFINE_enum(
@@ -241,6 +240,8 @@ class TFDSBuilder(tfds.core.GeneratorBasedBuilder):
     if post_process_map := self.config.get("post_process_map"):
       if isinstance(post_process_map, beam.DoFn):
         pp_pipe = beam.ParDo(post_process_map)
+      elif isinstance(post_process_map, beam.ParDo):
+        pp_pipe = post_process_map
       elif callable(post_process_map):
         pp_pipe = beam.Map(post_process_map)
       else:

@@ -65,9 +65,10 @@ def extract_features(
       if feature_mask is not None:
         feature_mask = np.array(feature_mask, dtype=bool)
       for i in range(feature.shape[-1]):
-        yield (f"{name}_band_{i}", group_id), (
-            feature[..., i],
-            feature_mask[..., i] if feature_mask is not None else None)
+        feature_mask_i = None
+        if  feature_mask is not None and i < feature_mask.shape[-1]:
+          feature_mask_i = feature_mask[..., i]
+        yield (f"{name}_band_{i}", group_id), (feature[..., i], feature_mask_i)
     else:
       yield (name, group_id), (feature, d.get(f"{name}_mask", None))
 

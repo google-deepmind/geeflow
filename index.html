@@ -1,0 +1,893 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for GeeFlow: Python library for generating large scale geospatial datasets using Google Earth Engine.">
+      
+      
+        <meta name="author" content="Google DeepMind">
+      
+      
+        <link rel="canonical" href="https://google-deepmind.github.io/geeflow/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.0">
+    
+    
+      
+        <title>GeeFlow Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="assets/stylesheets/main.618322db.min.css">
+      
+        
+        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="dark-blue" data-md-color-accent="black">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#welcome-to-geeflow" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="." title="GeeFlow Documentation" class="md-header__button md-logo" aria-label="GeeFlow Documentation" data-md-component="logo">
+      
+  <img src="https://raw.githubusercontent.com/google-deepmind/geeflow/refs/heads/main/docs/images/geeflow_logo_1.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            GeeFlow Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Home
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/google-deepmind/geeflow" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    google-deepmind/geeflow
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="." title="GeeFlow Documentation" class="md-nav__button md-logo" aria-label="GeeFlow Documentation" data-md-component="logo">
+      
+  <img src="https://raw.githubusercontent.com/google-deepmind/geeflow/refs/heads/main/docs/images/geeflow_logo_1.png" alt="logo">
+
+    </a>
+    GeeFlow Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/google-deepmind/geeflow" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    google-deepmind/geeflow
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="." class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key features
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#github-directory-structure-and-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub directory structure and conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dataset-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataset configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dataset configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#label-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Label configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#source-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cite-geeflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cite GeeFlow
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key features
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#github-directory-structure-and-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub directory structure and conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dataset-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataset configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dataset configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#label-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Label configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#source-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cite-geeflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cite GeeFlow
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/google-deepmind/geeflow/edit/master/docs/index.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+    
+      
+    
+    <a href="https://github.com/google-deepmind/geeflow/raw/master/docs/index.md" title="View source of this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 18c.56 0 1 .44 1 1s-.44 1-1 1-1-.44-1-1 .44-1 1-1m0-3c-2.73 0-5.06 1.66-6 4 .94 2.34 3.27 4 6 4s5.06-1.66 6-4c-.94-2.34-3.27-4-6-4m0 6.5a2.5 2.5 0 0 1-2.5-2.5 2.5 2.5 0 0 1 2.5-2.5 2.5 2.5 0 0 1 2.5 2.5 2.5 2.5 0 0 1-2.5 2.5M9.27 20H6V4h7v5h5v4.07c.7.08 1.36.25 2 .49V8l-6-6H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h4.5a8.2 8.2 0 0 1-1.23-2"/></svg>
+    </a>
+  
+
+
+<h1 id="welcome-to-geeflow">Welcome to GeeFlow<a class="headerlink" href="#welcome-to-geeflow" title="Permanent link">&para;</a></h1>
+<div style="text-align: left">
+<img align="right" src="https://raw.githubusercontent.com/google-deepmind/geeflow/refs/heads/main/docs/images/geeflow_logo_1.png" width="100">
+</div>
+
+<div style="
+  background-color: transparent;
+  padding: 5px;
+  text-align: center;
+  color:rgb(66, 66, 66);
+  font-weight: bold;
+  font-size: 1.5em;
+  font-style: italic;
+  margin-left: auto;
+  margin-right: auto;
+  width: fit-content;
+">
+  Python library for generating large scale geospatial datasets using Google
+  Earth Engine.
+</div>
+
+<p><br></p>
+<div class="mdx-hero__content">
+  <a href="https://github.com/google-deepmind/geeflow" class="md-button">
+    GitHub repository
+  </a>
+</div>
+
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>GeeFlow is a Python library from Google DeepMind for creating and processing
+large-scale geospatial datasets using <a href="https://earthengine.google.com/">Google Earth Engine</a>.
+It contains tools and pipeline launch scripts to generate geospatial datasets.</p>
+<p>GeeFlow primarily focuses on supporting geospatial AI research, and it is not
+intended as a production-ready utility. The datasets created with GeeFlow
+conform to the TensorFlow Datasets (TFDS) format, which lets you use them
+directly with TFDS <code>tf.data.Dataset</code> data pipelines, streamlining integration
+into common machine learning workflows.</p>
+<p>The GeeFlow project is open-sourced to facilitate and accelerate research in
+global-scale geospatial data preparation for AI applications. The goal is to
+simplify the data preparation phase for machine learning experiments and
+abstract workflows associated with Google Earth Engine for large-scale data
+extraction and processing.</p>
+<p>To access GeeFlow, visit <a href="https://github.com/google-deepmind/geeflow">the GitHub repository</a>.</p>
+<h2 id="key-features">Key features<a class="headerlink" href="#key-features" title="Permanent link">&para;</a></h2>
+<p>GeeFlow includes a set of capabilities tailored for geospatial dataset
+generation and processing:</p>
+<ul>
+<li><strong>Datasets:</strong> Create small- and large-scale datasets, suitable for
+    both supervised and unsupervised learning tasks. These datasets are prepared
+    for direct ingestion into geospatial AI model training pipelines and include
+    precomputed standard and robust statistics.</li>
+<li><strong>Inference maps:</strong> Generate inference maps that can scale up to global
+    coverage at any resolution, letting you apply trained models over extensive
+    geographical areas.</li>
+<li><strong>Data support:</strong> Provide support for various types of geospatial satellite
+    and remote sensing data, as well as labels sourced from Google Earth Engine.</li>
+<li><strong>Resolution and sampling:</strong> Enable arbitrary spatial and temporal
+    resolution and flexible sampling strategies for data sources, catering to
+    diverse research requirements.</li>
+<li><strong>Tooling:</strong> Provide integrated tools for both sampling geospatial data and
+    generating inference maps.</li>
+</ul>
+<h2 id="design">Design<a class="headerlink" href="#design" title="Permanent link">&para;</a></h2>
+<p>GeeFlow is designed to complement model training frameworks like
+<a href="https://github.com/google-deepmind/jeo">Jeo</a>. While GeeFlow specializes in
+generating large-scale, TFDS-compatible geospatial datasets using Google Earth
+Engine, Jeo provides a framework for training machine learning models on such
+datasets, particularly using JAX and Flax. A common and intended workflow
+involves using GeeFlow to prepare the data, which is then ingested by Jeo or
+other compatible frameworks for model development, training, and evaluation.</p>
+<p>The existence of these separate but complementary tools provides a modular
+toolchain for geospatial AI research. Therefore, GeeFlow addresses the upstream
+data challenges inherent in working with large-scale Earth observation data,
+while other frameworks tackles the downstream modeling challenges. For more
+information, see <a href="#out-of-scope">Out of scope</a>.</p>
+<h3 id="github-directory-structure-and-conventions">GitHub directory structure and conventions<a class="headerlink" href="#github-directory-structure-and-conventions" title="Permanent link">&para;</a></h3>
+<p>The following is the directory structure of core modules in the
+<a href="https://github.com/google-deepmind/geeflow">GitHub repository</a>:</p>
+<ul>
+<li><code>main</code>: all core components.</li>
+<li><code>stats/</code>: the tooling to compute data statistics.</li>
+<li><code>configs/</code>: the configuration files to generate datasets.</li>
+<li><code>data/</code>: example data.</li>
+</ul>
+<p>The following are some internal conventions:</p>
+<ul>
+<li>Unless otherwise specified, <code>lat</code> and <code>lon</code> refer to latitude and longitude,
+    respectively.</li>
+<li>For GPS, the system uses the
+    <a href="https://en.wikipedia.org/wiki/World_Geodetic_System">WGS 84</a> coordinate
+    system.</li>
+<li>For projected coordinates, the system uses local
+    <a href="https://en.wikipedia.org/wiki/Universal_Transverse_Mercator_coordinate_system">UTM</a>
+    coordinates.</li>
+</ul>
+<h3 id="dataset-configuration">Dataset configuration<a class="headerlink" href="#dataset-configuration" title="Permanent link">&para;</a></h3>
+<p>To provide the needed flexibility for datasets, the <code>geeflow/configs/</code> directory
+of the GitHub repository contains
+<a href="https://github.com/google/ml_collections">ML Collections</a> configuration files
+for dataset configurations.</p>
+<p>Dataset configuration is split into <em>label configuration</em> and
+<em>source configuration</em>:</p>
+<h4 id="label-configuration">Label configuration<a class="headerlink" href="#label-configuration" title="Permanent link">&para;</a></h4>
+<p>Consider the following aspects when configuring labels:</p>
+<ul>
+<li>You must provide a CSV or <a href="https://parquet.apache.org/">parquet</a> file with
+    the locations of the samples, such as the <code>lat</code> and <code>lon</code> columns, and image
+    sizes in meters (for UTM projected samples) or degrees (for spherical
+    CRS).</li>
+<li>If you want to include other columns in the generated dataset samples, such
+    as image-level labels or metadata, provide the list to the <code>meta_keys</code>
+    field.</li>
+<li>You can specify the default resolution per pixel (<code>default_scale</code>) for all
+    sources, which the system overwrites if the source specifies its own scale,
+    and the reference maximal pixel size in meters (<code>max_cell_size_m</code>) for
+    proper gridding of multi-scale sources.</li>
+<li>If you want to generate separate training splits, for example, <code>train</code>,
+    <code>val</code>, and <code>test</code>, include a column with the split name per sample in
+    <code>meta_keys</code>. Otherwise, the system randomly generates the splits by
+    geographically separating cells based on the selected
+    <a href="http://s2geometry.io/">S2 geometry</a> scale level.</li>
+</ul>
+<p>The following is a label configuration example:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>labels = ml_collections.ConfigDict()
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>labels.path = &quot;data/demo_labels.csv&quot;
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>labels.img_width_m = 240  # Image width and height of 240 meters on each side.
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>labels.max_cell_size_m = 30  # Reference maximal pixel size in meters.
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>labels.meta_keys = (&quot;lat&quot;, &quot;lon&quot;, &quot;split&quot;)
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>labels.num_max_samples = 10  # Only for debugging, limiting the number of generated examples.
+</span></code></pre></div>
+<h4 id="source-configuration">Source configuration<a class="headerlink" href="#source-configuration" title="Permanent link">&para;</a></h4>
+<p>Consider the following aspects when configuring sources. This part contains
+named sources that Google Earth Engine provides:</p>
+<ul>
+<li>For every location <code>x</code> specified in the label configuration and every
+    specified source <code>s</code>, the system creates an image tensor with shape
+    <code>(T_s,H_s,W_s,C_s)</code> (temporal size, height, width, number of channels).
+    <code>T_s</code> or <code>C_s</code> might be absent, and any dimension can be one. The
+    dimensions can be different from source to source in dependence of the
+    specified spatial resolution or scale, temporal sampling, and the selected
+    channels.</li>
+<li>You define at least the source class from the <code>geeflow/ee_data.py</code> file in
+    the GitHub repository, where you can provide additional options, such as the
+    data mode, using the <code>kw</code> field. If a source class isn't defined in the
+    <code>ee_data.py</code> file, you can use a <code>CustomImage</code>, <code>CustomIC</code>, or <code>CustomFC</code>
+    configuration and set all values explicitly, such as <code>asset_name</code>.</li>
+<li>Other fields include the following:<ul>
+<li><code>scale</code>: resolution per pixel in meters.</li>
+<li><code>select</code>: the bands to include in the given order.</li>
+<li><code>sampling_kw</code>: keyword arguments for how to aggregate multiple images
+     within a time range.</li>
+</ul>
+</li>
+<li>Date ranges (<code>date_ranges</code>) are a list of time ranges that aggregate the
+    data for each returned time sample. A tuple of the form <code>[start date, number
+    of months, number of days]</code> to aggregate over specifies each date range.</li>
+</ul>
+<p>The following is a source configuration example:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">sources</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>ml_collections.ConfigDict<span class="o">()</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sources.s2<span class="w"> </span><span class="o">=</span><span class="w"> </span>utils.get_source_config<span class="o">(</span><span class="s2">&quot;Sentinel2&quot;</span>,<span class="w"> </span><span class="s2">&quot;ic&quot;</span><span class="o">)</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>sources.s2.kw.mode<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;L2A&quot;</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>sources.s2.scale<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">10</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>sources.s2.select<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">[</span><span class="s2">&quot;B3&quot;</span>,<span class="w"> </span><span class="s2">&quot;B2&quot;</span>,<span class="w"> </span><span class="s2">&quot;B1&quot;</span><span class="o">]</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>sources.s2.sampling_kw.reduce_fn<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;median&quot;</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>sources.s2.sampling_kw.cloud_mask_fn<span class="w"> </span><span class="o">=</span><span class="w"> </span>ee_data.Sentinel2.im_cloud_score_plus_mask
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>sources.s2.date_ranges<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">[(</span><span class="s2">&quot;2023-01-01&quot;</span>,<span class="w"> </span><span class="m">12</span>,<span class="w"> </span><span class="m">0</span><span class="o">)</span>,<span class="w"> </span><span class="o">(</span><span class="s2">&quot;2024-01-01&quot;</span>,<span class="w"> </span><span class="m">12</span>,<span class="w"> </span><span class="m">0</span><span class="o">)]</span><span class="w">  </span><span class="c1"># 2 annual samples</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>sources.s1<span class="w"> </span><span class="o">=</span><span class="w"> </span>utils.get_source_config<span class="o">(</span><span class="s2">&quot;Sentinel1&quot;</span>,<span class="w"> </span><span class="s2">&quot;ic&quot;</span><span class="o">)</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>sources.s1.kw<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">{</span><span class="s2">&quot;mode&quot;</span>:<span class="w"> </span><span class="s2">&quot;IW&quot;</span>,<span class="w"> </span><span class="s2">&quot;pols&quot;</span>:<span class="w"> </span><span class="o">(</span><span class="s2">&quot;VV&quot;</span>,<span class="w"> </span><span class="s2">&quot;VH&quot;</span><span class="o">)</span>,<span class="w"> </span><span class="s2">&quot;orbit&quot;</span>:<span class="w"> </span><span class="s2">&quot;both&quot;</span><span class="o">}</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>sources.s1.scale<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">10</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>sources.s1.sampling_kw.reduce_fn<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;mean&quot;</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>sources.s1.date_ranges<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">[(</span><span class="s2">&quot;2023-01-01&quot;</span>,<span class="w"> </span><span class="m">3</span>,<span class="w"> </span><span class="m">0</span><span class="o">)</span>,<span class="w"> </span><span class="o">(</span><span class="s2">&quot;2023-04-01&quot;</span>,<span class="w"> </span><span class="m">3</span>,<span class="w"> </span><span class="m">0</span><span class="o">)]</span><span class="w">  </span><span class="c1"># 2 seasonal samples</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>sources.elevation<span class="w"> </span><span class="o">=</span><span class="w"> </span>utils.get_source_config<span class="o">(</span><span class="s2">&quot;NasaDem&quot;</span>,<span class="w"> </span><span class="s2">&quot;im&quot;</span><span class="o">)</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>sources.elevation.scale<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">30</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>sources.elevation.select<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">(</span><span class="s2">&quot;elevation&quot;</span>,<span class="w"> </span><span class="s2">&quot;slope&quot;</span>,<span class="w"> </span><span class="s2">&quot;aspect&quot;</span><span class="o">)</span>
+</span></code></pre></div>
+<p>The generated data in this example has different spatial, temporal, and spectral
+dimensions. The temporal samples from Sentinel-2 and Sentinel-1 cover different
+time ranges. This example emphasizes the flexibility of the specifications.</p>
+<h3 id="out-of-scope">Out of scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h3>
+<p>Specific capabilities are considered out of scope from the GeeFlow library but
+complement the focus on geospatial AI research:</p>
+<ul>
+<li><strong>Model training and inference</strong>: Pick a framework, for example:<ul>
+<li>For <a href="https://github.com/jax-ml/jax">Jax</a>/<a href="https://github.com/google/flax">Flax</a>,
+   we use <a href="https://github.com/google-deepmind/jeo">Jeo</a>.</li>
+<li>For <a href="https://pytorch.org/">PyTorch</a>, check out
+  <a href="https://github.com/microsoft/torchgeo">TorchGeo</a>.</li>
+</ul>
+</li>
+<li><strong>Google Earth Engine data interactive visualization and analysis</strong>: Check
+   out, for example, <a href="https://geemap.org/">geemap</a> for Python-based
+   analysis. You can also explore GEE's own Javascript-based
+   <a href="https://developers.google.com/earth-engine/guides/playground">EE Code Editor</a>.</li>
+<li><strong>Datasets repository</strong>: Check out, for example:<ul>
+<li><a href="https://huggingface.co/datasets">Hugging Face</a></li>
+<li><a href="https://www.tensorflow.org/datasets/catalog">TFDS Catalog</a></li>
+<li><a href="https://torchgeo.readthedocs.io/en/stable/api/datasets.html#geospatial-datasets">TorchGeo Datasets</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="cite-geeflow">Cite GeeFlow<a class="headerlink" href="#cite-geeflow" title="Permanent link">&para;</a></h2>
+<p>Cite the GeeFlow codebase as follows:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>@software<span class="o">{</span>geeflow2025:github,
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nv">author</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">{</span>Maxim<span class="w"> </span>Neumann<span class="w"> </span>and<span class="w"> </span>Anton<span class="w"> </span>Raichuk<span class="w"> </span>and<span class="w"> </span>Michelangelo<span class="w"> </span>Conserva<span class="w"> </span>and<span class="w"> </span>Keith<span class="w"> </span>Anderson<span class="o">}</span>,
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nv">title</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">{{</span>GeeFlow<span class="o">}</span>:<span class="w"> </span>Large<span class="w"> </span>scale<span class="w"> </span>datasets<span class="w"> </span>generation<span class="w"> </span>and<span class="w"> </span>processing<span class="w"> </span><span class="k">for</span><span class="w"> </span>geospatial<span class="w"> </span><span class="o">{</span>AI<span class="o">}</span><span class="w"> </span>research<span class="o">}</span>.
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nv">url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">{</span>https://github.com/google-deepmind/geeflow<span class="o">}</span>,
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nv">year</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">{</span><span class="m">2025</span><span class="o">}</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="o">}</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["announce.dismiss", "content.action.edit", "content.action.view", "content.code.annotate", "content.code.copy", "content.tooltips", "navigation.footer", "navigation.indexes", "navigation.sections", "navigation.tabs", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "assets/javascripts/workers/search.7a47a382.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="assets/javascripts/bundle.e71a0d61.min.js"></script>
+      
+    
+  </body>
+</html>

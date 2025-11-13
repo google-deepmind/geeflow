@@ -32,6 +32,7 @@ from absl import app
 from absl import flags
 from absl import logging
 import apache_beam as beam
+import einops
 from geeflow import coords
 from geeflow import ee_export_utils
 from geeflow import export_rasters_utils as export_utils
@@ -100,6 +101,8 @@ flags.DEFINE_bool("read_cells_metadata_on_master", False,
                   " not need to read the same data over and over again.")
 flags.DEFINE_bool("write_cogs", False,
                   "When True, stores rasters as COG files on GCP.")
+flags.DEFINE_string("rearrange", None, "Rearrange the predictions shape. "
+                    "Examples: 'n t y x -> n y x t' or 'n y x -> n y x 1'")
 FLAGS = flags.FLAGS
 
 
@@ -216,18 +219,22 @@ def _read_file_data(
 
 
 def read_and_split_data(
-    data: tuple[str, str], bbox, cells_metadata: pd.DataFrame | None
+    zone_and_file: tuple[str, str], bbox, cells_metadata: pd.DataFrame | None
 ) -> Iterable[tuple[tuple[str, int, int],
                     tuple[int, int, int, int, np.ndarray]]]:
   """Read data from file and split it into splits."""
-  utm_zone, file = data
+  utm_zone, file = zone_and_file
   if cells_metadata is None:
     cells_metadata = read_cells_metadata(FLAGS.cells_metadata_path, utm_zone)
   if cells_metadata is None: return
 
   meta, predictions = _read_file_data(file, cells_metadata)
-  logging.info("Processing zone %s with %d plots from file %s", utm_zone,
-               len(predictions), file)
+  logging.info("Processing zone %s with %d (%s) plots from file %s", utm_zone,
+               len(predictions), predictions.shape, file)
+
+  # Expectations on the predictions shape: (n, ..., y, x, c).
+  if FLAGS.rearrange:
+    predictions = einops.rearrange(predictions, FLAGS.rearrange)
 
   x_splits, y_splits = export_utils.get_info(
       *bbox,
@@ -423,9 +430,10 @@ def _get_utm_zones():
   for path in FLAGS.inference_data:
     if UTM_ZONE_KEYWORD in path:
       regex = re.compile(
-          path.replace("*", ".*").replace(UTM_ZONE_KEYWORD, "([0-9A-Z]*)"))
-      logging.info(gfile.Glob(path.replace(UTM_ZONE_KEYWORD, "*")))
-      for file in gfile.Glob(path.replace(UTM_ZONE_KEYWORD, "*")):
+          path.replace("*", ".*")
+          .replace(UTM_ZONE_KEYWORD, "([0-9]{1,2}[A-Z])"))
+      logging.info(files := gfile.Glob(path.replace(UTM_ZONE_KEYWORD, "*")))
+      for file in files:
         match = regex.match(file)
         assert match is not None
         utm_zone = match.group(1)
@@ -457,6 +465,8 @@ def _get_utm_zones():
     result.append((utm_zone, bbox, epsg, files))
 
   logging.info("UTM Zones to process(%d): %s", len(result), result)
+  if not result:
+    logging.warning("No UTM Zones to process (but an empty asset was created).")
   return result
 
 

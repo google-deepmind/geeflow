@@ -321,13 +321,24 @@ Example for `$OUTDIR/demo/1.0.0/stats/train_s2_band_1.json`:
 }
 ```
 
+## Contributors
+
+Anton Raichuk,
+Burak Ekim,
+Evelyn Camacho Soberon,
+Giovanni Ciampi,
+Keith Anderson,
+Linus Scheibenreif,
+Maxim Neumann,
+Michelangelo Conserva
+
 ## Citing GeeFlow
 
 To cite this repository:
 
 ```
 @software{geeflow2025:github,
-  author = {Maxim Neumann and Anton Raichuk and Michelangelo Conserva and Keith Anderson},
+  author = {{GeeFlow} team},
   title = {{GeeFlow}: Large scale datasets generation and processing for geospatial {AI} research},
   url = {https://github.com/google-deepmind/geeflow},
   year = {2025}

@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -76,27 +76,40 @@ def to_datetime(d: str, dt_format: str = DATE_FORMAT) -> datetime.datetime:
   return make_tza(d)
 
 
+def _parse_start(start) -> datetime.datetime:
+  """Parses start date into timezone-aware datetime object."""
+  if isinstance(start, (float, int, np.number)):
+    return  millis_to_datetime(start)
+  if isinstance(start, str):
+    return to_datetime(start, DATE_FORMAT)
+  return make_tza(start)
+
+
+def decremental_date_list(
+    start, n, *, years=0, months=0, days=0) -> Sequence[datetime.datetime]:
+  """Returns list of n datetimes with given decrements in years/months/days."""
+  assert years or months or days, "At least one of the inc units should be set."
+  r = range(n - 1, -1, -1)
+  return [_parse_start(start) - relativedelta.relativedelta(
+      months=i*months, years=i*years, days=i*days) for i in r]
+
+
 def incremental_date_list(
     start, n, *, years=0, months=0, days=0) -> Sequence[datetime.datetime]:
   """Returns list of n datetimes with given increments in years/months/days."""
   assert years or months or days, "At least one of the inc units should be set."
-  if isinstance(start, (float, int, np.number)):
-    start = millis_to_datetime(start)
-  elif isinstance(start, str):
-    start = to_datetime(start, DATE_FORMAT)
-  else:
-    start = make_tza(start)
+  start = _parse_start(start)
   return [start + relativedelta.relativedelta(
       months=i*months, years=i*years, days=i*days) for i in range(n)]
 
 
 def get_date_ranges(start: DateT, n: int, months: int = 0, months_skip: int = 0,
-                    days: int = 0) -> list[tuple[str, int, int]]:
+                    days: int = 0,
+                    increment: bool = True) -> list[tuple[str, int, int]]:
   """Returns a list with n dates and corresponding duration in months/days."""
+  fn = incremental_date_list if increment else decremental_date_list
   return [(to_datestr(x), months, days)
-          for x in incremental_date_list(start, n,
-                                         months=months + months_skip,
-                                         days=days)]
+          for x in fn(start, n, months=months + months_skip, days=days)]
 
 
 def get_date_ranges_from_year(data, *, year_key: str = "", date_key: str = "",
@@ -105,8 +118,7 @@ def get_date_ranges_from_year(data, *, year_key: str = "", date_key: str = "",
   assert bool(year_key) != bool(date_key), "Year or date key must be set."
   if year_key:
     return get_date_ranges(f"{data[year_key]}-01-01", **kwargs)
-  else:
-    return get_date_ranges(data[date_key], **kwargs)
+  return get_date_ranges(data[date_key], **kwargs)
 
 
 def get_date_from_year(data, year_key: str, add_years: int = 0) -> str:

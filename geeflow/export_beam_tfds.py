@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -75,6 +75,9 @@ class CreateData(beam.DoFn):
   def __init__(self, config: ml_collections.ConfigDict, split):
     self.config = config
     self.split = split
+    self.num_labels = beam.metrics.Metrics.counter(
+        self.__class__, "num_labels"
+    )
 
   def start_bundle(self):
     # Initialize and authenticate EE.
@@ -109,6 +112,7 @@ class CreateData(beam.DoFn):
             return True
         return False
       label_items = list(filter(_filter_example, label_items))
+    self.num_labels.inc(len(label_items))
     if not label_items and path == self.config.labels.path:
       # Only crash if we are reading a single file.
       raise ValueError(f"No examples identified for split `{self.split}` "
@@ -123,9 +127,7 @@ def _get_metadata_keys(config: ml_collections.ConfigDict) -> list[str]:
 
   metadata_keys = []
   for name, cfg in config.sources.items():
-    source_ee_algo = cfg.get("algo") or pipelines.ALGO_MAP.get(
-        cfg.get("module")
-    )
+    source_ee_algo = pipelines.get_algo_from_config(config, name)
     # Algorithms that always returns timestamps.
     if source_ee_algo in ee_algos_with_ts:
       metadata_keys.append(f"{name}_timestamps")
@@ -141,10 +143,10 @@ def _is_time_varying_algo(
     config: ml_collections.ConfigDict, name: str
 ) -> bool:
   """Returns True if the given source is time varying."""
-  cfg = config.sources.get(name, {})
-  source_ee_algo = cfg.get("algo")
-  default_ee_algo = pipelines.ALGO_MAP.get(cfg.get("module"))
-  return (source_ee_algo or default_ee_algo) == ee_algo.ic_sample
+  if name not in config.sources:
+    return False
+  source_ee_algo = pipelines.get_algo_from_config(config, name)
+  return source_ee_algo == ee_algo.ic_sample
 
 
 def _get_split_tuples(splits):
@@ -252,6 +254,27 @@ class TFDSBuilder(tfds.core.GeneratorBasedBuilder):
     )
 
 
+def _get_sample_data(labels, config):
+  """Returns a single sample with data for the given labels and config."""
+  if config.get("post_process_map"):
+    # A postprocessing map allows to skip lables (e.g. due to missing data) so
+    # we allow for some retries.
+    num_retries = config.labels.get("num_max_samples_for_tfds_features", 10)
+    for i in range(num_retries):
+      try:
+        data = ee_export_utils.process_single_item(
+            labels[i], config, FLAGS.ee_project
+        )
+        return data
+      except Exception:  # pylint: disable=broad-except
+        continue
+    raise ValueError(f"Failed to process the first {num_retries} samples.")
+  else:
+    return ee_export_utils.process_single_item(
+        labels[0], config, FLAGS.ee_project
+    )
+
+
 def make_tfds_features(config):
   """Converts features description to TFDS form."""
   config = copy.deepcopy(config)
@@ -262,26 +285,35 @@ def make_tfds_features(config):
   config.labels.path = paths[0]
   labels = pipelines.pipeline_labels(config)
   assert labels
-  data = ee_export_utils.process_single_item(labels[0], config,
-                                             FLAGS.ee_project)
+  data = _get_sample_data(labels, config)
+
   out = {}
 
   metadata_keys = _get_metadata_keys(config)
   for k, v in data.items():
+    source = k.replace("_mask", "")
+
+    tfds_type = tfds.features.Tensor
+    if source in config.sources and "tfds_type" in config.sources[source]:
+      tfds_type = getattr(tfds.features, config.sources[source].tfds_type)
+
     v = np.array(v)
+    if source in config.sources and "shape" in config.sources[source]:
+      shape = config.sources[source].shape
+    elif _is_time_varying_algo(config, source):
+      shape = v.shape[-3:]
+    else:
+      shape = v.shape
+
     dtype = v.dtype
     if k in metadata_keys:
-      out[k] = tfds.features.Sequence(
-          tfds.features.Tensor(shape=(), dtype=dtype)
-      )
-    elif _is_time_varying_algo(config, k.replace("_mask", "")):
+      out[k] = tfds.features.Sequence(tfds_type(shape=(), dtype=dtype))
+    elif _is_time_varying_algo(config, source):
       # Assume that width, height and channels are the same for all plots.
-      out[k] = tfds.features.Sequence(
-          tfds.features.Tensor(shape=v.shape[-3:], dtype=dtype)
-      )
+      out[k] = tfds.features.Sequence(tfds_type(shape=shape, dtype=dtype))
     else:
       if v.shape:
-        out[k] = tfds.features.Tensor(shape=v.shape, dtype=dtype)
+        out[k] = tfds_type(shape=shape, dtype=dtype)
       else:
         out[k] = tfds.features.Scalar(dtype)
   return out

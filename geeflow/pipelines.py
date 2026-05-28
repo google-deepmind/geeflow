@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ from geeflow import ee_algo
 from geeflow import ee_data
 from geeflow import times
 from geeflow import utils
+from geeflow import validation
 import ml_collections as mlc
 import pandas as pd
 
@@ -36,24 +37,6 @@ import ee
 
 EeAssetType = ee.ImageCollection | ee.Image | ee.FeatureCollection
 ConfigDict = mlc.ConfigDict | dict[str, Any]
-
-
-# TODO.
-IC_SAMPLE_DATE_RANGES = ["Landsat7", "Landsat8", "Sentinel1", "Sentinel2",
-                         "Alos", "ModisTerraVeg", "ModisSurfRefl", "ModisGPP",
-                         "ModisET", "ModisBurn", "ModisFire", "FIRMS",
-                         "WorldPop", "DynamicWorld"]
-IC_SAMPLE = ["Nicfi", "CIESIN", "GHSPop", "NAIP"]
-SAMPLE_ROI = ["NasaDem", "WorldCover", "FPP", "TPP", "Hansen", "LandCover",
-              "WSF2015", "TreeCoverLossDueToFire", "CopDem", "FABDEM",
-              "CustomImage", "Primary", "EnglandLidarDem"]
-FC_GET = ["Countries"]
-
-ALGO_MAP = {k: ee_algo.ic_sample_date_ranges for k in IC_SAMPLE_DATE_RANGES}
-ALGO_MAP |= {k: ee_algo.ic_sample for k in IC_SAMPLE}
-ALGO_MAP |= {k: ee_algo.sample_roi for k in SAMPLE_ROI}
-ALGO_MAP |= {k: ee_algo.fc_get for k in FC_GET}
-ALGO_MAP["CCDC"] = ee_algo.get_ccdc
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,14 +99,47 @@ def pipeline_labels(
   """Returns a dict with extracted/processed label attributes."""
   if df is None:
     df = get_labels_df(config, config.labels.get("cache"))
-  meta_keys = list(config.labels.meta_keys or df.columns)
+  meta_keys = list(config.labels.get("meta_keys", []) or df.columns)
   if set(meta_keys) - set(df.columns):
     raise ValueError(f"Some meta keys ({meta_keys}) are "
                      f"not in data columns ({df.columns}).")
-  df = df[meta_keys]
+  df = df[meta_keys].reset_index(drop=True)
   if "id" not in df.columns:
     df["id"] = range(len(df))
   return df.to_dict("records")
+
+
+def utm_item_to_mapping(
+    item: dict[str, Any], img_width_m: float, max_cell_size_m: float
+) -> coords.UtmGridMapping:
+  """Converts an item to a UTM geometry."""
+  img_size = int(img_width_m // max_cell_size_m)
+  if all(
+      x in item
+      for x in ["utm_x_min", "utm_x_max", "utm_y_min", "utm_y_max", "utm_zone"]
+  ):
+    assert item["utm_x_max"] - item["utm_x_min"] == img_width_m
+    assert item["utm_y_max"] - item["utm_y_min"] == img_width_m
+    return coords.UtmGridMapping(
+        item["utm_zone"],
+        max_cell_size_m,
+        img_size,
+        img_size,
+        item["utm_x_min"],
+        item["utm_y_min"],
+    )
+  if all(x in item for x in ["utm_x", "utm_y", "utm_zone"]):
+    return coords.UtmGridMapping(
+        item["utm_zone"],
+        max_cell_size_m,
+        img_size,
+        img_size,
+        item["utm_x"] - img_width_m / 2,
+        item["utm_y"] - img_width_m / 2,
+    )
+  return coords.UtmGridMapping.from_latlon_center(
+      item["lat"], item["lon"], max_cell_size_m, img_size
+  )
 
 
 def pipeline_item_to_roi(
@@ -136,23 +152,7 @@ def pipeline_item_to_roi(
   if config.labels.get("use_utm", True):
     img_width = img_width_m or config.labels.img_width_m
     max_cell_size = config.labels.max_cell_size_m
-    img_size = img_width // max_cell_size
-    if all(x in item for x in ["utm_x_min", "utm_x_max",
-                               "utm_y_min", "utm_y_max", "utm_zone"]):
-      assert item["utm_x_max"] - item["utm_x_min"] == img_width
-      assert item["utm_y_max"] - item["utm_y_min"] == img_width
-      roi = coords.UtmGridMapping(item["utm_zone"], max_cell_size, img_size,
-                                  img_size, item["utm_x_min"],
-                                  item["utm_y_min"])
-    elif all(x in item for x in ["utm_x", "utm_y", "utm_zone"]):
-      roi = coords.UtmGridMapping(item["utm_zone"],
-                                  max_cell_size, img_size, img_size,
-                                  item["utm_x"] - img_width / 2,
-                                  item["utm_y"] - img_width / 2)
-    else:
-      roi = coords.UtmGridMapping.from_latlon_center(
-          item["lat"], item["lon"], max_cell_size, img_size)
-    roi = roi.to_ee(utm=True)
+    roi = utm_item_to_mapping(item, img_width, max_cell_size).to_ee(True)
   else:
     roi = coords.get_lat_lon_roi(
         lat=item["lat"], lon=item["lon"],
@@ -181,6 +181,7 @@ def pipeline_item_to_rois(
 
 def pipeline_sources(config: mlc.ConfigDict) -> dict[str, EeAssetType]:
   """Returns a dict with source assets."""
+  validation.validate_config(config)
   c = config.sources
 
   p = {}
@@ -190,14 +191,19 @@ def pipeline_sources(config: mlc.ConfigDict) -> dict[str, EeAssetType]:
       # In config or colab, we can pass a GEE asset directly.
       sat = v.module
     else:
-      sat = getattr(ee_data, v.module)(**v.get("kw", {}))
+      source_cls = validation.resolve_source_class(v.module)
+      sat = source_cls(**v.get("kw", {}))
       out_method = v.get("out") or _infer_out_method(sat)
       sat = getattr(sat, out_method)
       if out_method not in ["ic", "im", "fc"]:
         sat = sat(**v.get("out_kw", {}))
     if v.get("select"):
-      _validate_select_choices(k, sat, v.select)
-      sat = sat.select(v.select)
+      if v.algo not in ("get_image_from_item", ee_algo.get_image_from_item):
+        # TODO: For this algo, we don't have enfore to specify the
+        # image collection so validate the select choices would raise an error.
+        # Consider enforince the specification of the image collection.
+        _validate_select_choices(k, sat, v.select)
+        sat = sat.select(v.select)
     if v.get("cast"):
       sat = sat.cast(*v.cast)
     if v.get("filter_date", True) and hasattr(sat, "filterDate"):
@@ -267,15 +273,16 @@ def get_algo_from_config(
 ) -> Callable[..., Any]:
   """Returns sampling algorithm function for a given source name."""
   cfg = config.sources[source_name]
-  if not ("algo" in cfg or cfg.module in ALGO_MAP):
+  if "algo" not in cfg or cfg.algo is None:
     raise ValueError(f"No valid algo for {source_name}")
-  algo_fn = cfg.get("algo", ALGO_MAP.get(cfg.module, None))
+  algo_fn = cfg.algo
   if isinstance(algo_fn, str):
     algo_fn = getattr(ee_algo, algo_fn)
   return algo_fn
 
 
 def _get_dummy_im(asset: EeAssetType, cfg: ConfigDict) -> ee.Image:
+  """Returns an empty dummy image for the given asset."""
   dummy_asset = asset
   if "dummy_image_id" in cfg:
     dummy_asset = dummy_asset.filterMetadata(
@@ -286,6 +293,8 @@ def _get_dummy_im(asset: EeAssetType, cfg: ConfigDict) -> ee.Image:
     # Running "mean" reducer will make type float, so we need to convert
     # dummy_im to float as well.
     dummy_im = dummy_im.toFloat()
+  if cfg.get("select_final", None):
+    dummy_im = dummy_im.select(cfg["select_final"])
   return dummy_im
 
 
@@ -368,9 +377,10 @@ def get_requests_fn(
           value = fn(item)
         kw[kw_name] = value
 
+        if cfg.get("select_final"):
+          kw["bands"] = cfg.get("select_final")
         if algo_name == "ic_sample_date_ranges":
           kw["dummy_im"] = _get_dummy_im(asset, cfg)
-          kw["bands"] = cfg.get("select_final")
           kw["scale"] = scale
 
         ims, ims_metadata = algo(roi, asset, **kw)
@@ -395,6 +405,10 @@ def get_requests_fn(
                      algo(asset, roi, cfg["select"]).items()}
       elif algo_name == "fc_to_image":
         im = algo(asset, roi, props=cfg.get("select"), **kw)
+        asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
+      elif algo_name == "get_image_from_item":
+        select = cfg.get("select", None)
+        im = ee_algo.get_image_from_item(item, cfg["asset_id_key"], select)
         asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
       else:
         raise ValueError(f"Unsupported algo: {algo_name}")

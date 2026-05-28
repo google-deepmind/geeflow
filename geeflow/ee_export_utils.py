@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,7 +46,8 @@ _MAX_HEADER_SIZE = 100_000
 
 
 _USER_MEM_LOG = (
-    "User memory limit exceeded for item: %s. Retries number: %d, exception: %s"
+    "Query exceeded resource limits for item: %s; "
+    "splitting query to retry. Retries: %d. Error: %s"
 )
 _GENERIC_LOG = (
     "Encountered an earth engine exception for item: %s. Retries number: %d, "
@@ -190,7 +191,7 @@ class GetInfo(beam.DoFn):
         err = str(e)
         exceptions.append(err)
         if _should_split_query(err):
-          logging.exception(_USER_MEM_LOG, item, i, err)
+          logging.warning(_USER_MEM_LOG, item, i, err)
           # If the query has failed, then we retry the query with a larger
           # number of splits starting from splitting the bands in half.
           min_source_split = (
@@ -218,7 +219,7 @@ class GetInfo(beam.DoFn):
                 raise ValueError(f"Failed to split {request.name}.") from e2
         else:
           # Retry soon.
-          logging.exception(_GENERIC_LOG, item, i, e)
+          logging.warning(_GENERIC_LOG, item, i, e)
           if self.num_query_retries:
             self.num_query_retries.inc()
           time.sleep(sleep_timeout)
@@ -343,8 +344,11 @@ def apply_transforms(feature, config, cropped_features_counter=None):
     if not scale: continue
     assert image_width >= scale, f"{key}: {image_width} < {scale}"
     if isinstance(scale, float):
-      s = math.ceil(image_width / scale)
-      assert abs(s  * scale - image_width) < 1e-6
+      if config.labels.get("use_utm", True):
+        s = math.ceil(image_width / scale)
+        assert abs(s * scale - image_width) < 1e-6
+      else:
+        s = math.ceil(image_width / scale)
     else:
       if config.labels.get("use_utm", True):
         assert image_width % scale == 0, f"{key}: {image_width} % {scale} != 0"
@@ -362,6 +366,20 @@ def apply_transforms(feature, config, cropped_features_counter=None):
         if cropped_features_counter:
           cropped_features_counter.inc()
         logging.info("Cropping %s from %s to %s", sub_key, data.shape, s)
+
+        # Pad if it's 1 pixel smaller than s
+        if data.shape[-3] == s - 1 or data.shape[-2] == s - 1:
+          logging.info("Padding %s from %s to %s", sub_key, data.shape, s)
+          pad_h = s - data.shape[-3] if data.shape[-3] == s - 1 else 0
+          pad_w = s - data.shape[-2] if data.shape[-2] == s - 1 else 0
+          dims = len(data.shape)
+          pad_list = [(0, 0)] * dims
+          if pad_h > 0:
+            pad_list[-3] = (0, pad_h)
+          if pad_w > 0:
+            pad_list[-2] = (0, pad_w)
+          data = np.pad(data, pad_list, mode="edge")
+
         assert data.shape[-3] == s or data.shape[-3] == s + 1, sub_key
         assert data.shape[-2] == s or data.shape[-2] == s + 1, sub_key
         feature[sub_key] = data[

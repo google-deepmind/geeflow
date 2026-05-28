@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,15 +14,25 @@
 
 """Utils."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+import concurrent.futures
 import math
 import os
+import random
+import time
 from typing import Any
 
 from absl import logging
+from geeflow import ee_algo
+from geeflow import times
+import geopandas as gpd
 import jax
 import ml_collections as mlc
 import numpy as np
+import pandas as pd
+import shapely.geometry
+import shapely.ops
+import tqdm.auto as tqdm
 
 from tensorflow.io import gfile
 import ee
@@ -41,15 +51,23 @@ def get_utm_grid_size(
     cell_expansion_offset_meters: int = 5000,
 ) -> tuple[int, int]:
   """Returns the grid dimensions for the given UTM zone."""
-  x_num = math.ceil(LON_TO_METERS * max(
-      math.cos(start_lat / 180 * math.pi), math.cos(end_lat / 180 * math.pi),
-  ) * (end_lon - start_lon) / img_width_m)
+  x_num = math.ceil(
+      LON_TO_METERS
+      * max(
+          math.cos(start_lat / 180 * math.pi),
+          math.cos(end_lat / 180 * math.pi),
+      )
+      * (end_lon - start_lon)
+      / img_width_m
+  )
   # Since UTM and Lat/Lon grids are not aligned, we add a small offset to ensure
   # that we'll be able to get all the cells within the UTM zone.
   # Here's an example of the problem:
   #  - https://code.earthengine.google.com/71fd4250184e7c041f13516959fe9d11
-  y_num = math.ceil((LAT_TO_METERS * (end_lat - start_lat) +
-                     cell_expansion_offset_meters) / img_width_m)
+  y_num = math.ceil(
+      (LAT_TO_METERS * (end_lat - start_lat) + cell_expansion_offset_meters)
+      / img_width_m
+  )
   return x_num, y_num
 
 
@@ -134,12 +152,12 @@ def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
 
   Args:
     arg: the string argument that's passed to get_config.
-    lazy: allow lazy parsing of arguments, which are not in spec. For these,
-      the type is auto-extracted in dependence of most complex possible type.
-    **spec: the name and default values of the expected options.
-      If the value is a tuple, the value's first element is the default value,
-      and the second element is a function called to convert the string.
-      Otherwise the type is automatically extracted from the default value.
+    lazy: allow lazy parsing of arguments, which are not in spec. For these, the
+      type is auto-extracted in dependence of most complex possible type.
+    **spec: the name and default values of the expected options. If the value is
+      a tuple, the value's first element is the default value, and the second
+      element is a function called to convert the string. Otherwise the type is
+      automatically extracted from the default value.
 
   Returns:
     ConfigDict object with extracted type-converted values.
@@ -162,9 +180,13 @@ def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
       # Yes, we rely on Py3.7 insertion order!
 
   # Now, expand the `arg` string into a dict of keys and values:
-  raw_kv = {raw_arg.split("=")[0]:
-                raw_arg.split("=", 1)[-1] if "=" in raw_arg else "True"
-            for raw_arg in arg.split(",") if raw_arg}
+  raw_kv = {
+      raw_arg.split("=")[0]: (
+          raw_arg.split("=", 1)[-1] if "=" in raw_arg else "True"
+      )
+      for raw_arg in arg.split(",")
+      if raw_arg
+  }
 
   # And go through the spec, using provided or default value for each:
   for name, (default, type_fn) in spec.items():
@@ -185,16 +207,19 @@ def get_type_with_default(v: Any) -> tuple[Any, Callable[[Any], Any]]:
   """Returns (v, string_to_v_type) with lenient bool parsing."""
   # For bool, do safe string conversion.
   if isinstance(v, bool):
+
     def strict_bool(x):
       assert x.lower() in {"true", "false", ""}
       return x.lower() == "true"
+
     return (v, strict_bool)
   # If already a (default, type) tuple, use that.
   if isinstance(v, (tuple, list)):
     assert len(v) == 2 and isinstance(v[1], type), (
         "List or tuple types are currently not supported because we use `,` as"
         " dumb delimiter. Contributions (probably using ast) welcome. You can"
-        " unblock by using a string with eval(s.replace(';', ',')) or similar")
+        " unblock by using a string with eval(s.replace(';', ',')) or similar"
+    )
     return (v[0], v[1])
   # Otherwise, derive the type from the default value.
   return (v, type(v))
@@ -252,3 +277,115 @@ def standardized_path(
   if not path.endswith(file_extension):
     path += file_extension
   return path
+
+
+def fix_orientation_for_bigquery(
+    geom: shapely.geometry.base.BaseGeometry,
+) -> shapely.geometry.base.BaseGeometry:
+  """Fixes the winding of a geometry."""
+  if geom.is_empty:
+    return geom
+  if isinstance(geom, shapely.geometry.Polygon):
+    return shapely.ops.orient(geom)
+  if isinstance(geom, shapely.geometry.MultiPolygon):
+    return shapely.geometry.MultiPolygon(
+        [shapely.ops.orient(g) for g in geom.geoms]
+    )
+  return geom
+
+
+def get_assets_geometries(
+    assets: Sequence[str], num_threads: int = 50, log: bool = True
+) -> dict[str, shapely.geometry.base.BaseGeometry]:
+  """Fetches the geometries of a list of EE assets."""
+
+  def get_geom(asset_id: str) -> shapely.geometry.base.BaseGeometry:
+    # We need to call selfMask to ensure we obtain the unmasked geometry.
+    return fix_orientation_for_bigquery(
+        shapely.geometry.shape(
+            ee.Image(asset_id).selfMask().geometry().getInfo()
+        )
+    )
+
+  geometries = dict()
+  with concurrent.futures.ThreadPoolExecutor(num_threads) as executor:
+    futures = {
+        executor.submit(get_geom, asset_id): asset_id for asset_id in assets
+    }
+
+    loop = futures
+    if log:
+      loop = tqdm.tqdm(futures, total=len(assets))
+
+    for future in loop:
+      geometries[futures[future]] = future.result()  # asset_id to geometry
+  return geometries
+
+
+def get_image_properties(
+    ic: ee.ImageCollection,
+    asset_name: str,
+    fetch_geom: bool = False,
+    num_threads: int = 50,
+    log: bool = True,
+) -> gpd.GeoDataFrame | pd.DataFrame | None:
+  """Fetches EE images properties and optionally fetches the geometry."""
+
+  # Fetch the properties of each image in the collection and process them
+  assets = pd.DataFrame(ee_algo.fetch_image_collection_properties(ic))
+  if assets.empty:
+    return None
+  assets["asset_id"] = asset_name + "/" + assets["system:index"]
+  assets["timestamp"] = assets["system:time_start"]
+  assets["date"] = pd.to_datetime(assets["timestamp"].map(times.to_datestr))
+  assets = assets[["asset_id", "date", "timestamp"]]
+
+  if not fetch_geom:
+    return assets
+
+  geometries = pd.Series(
+      get_assets_geometries(assets.asset_id.tolist(), num_threads, log)
+  ).to_frame("geometry")
+
+  return gpd.GeoDataFrame(
+      pd.merge(assets, geometries, left_on="asset_id", right_index=True)
+  )
+
+
+def retry_ee_call(
+    func: Callable[..., Any],
+    *args,
+    retries: int = 5,
+    start_delay_secs: float = 1.0,
+    **kwargs,
+) -> Any:
+  """Retries an Earth Engine call with exponential backoff and jitter.
+
+  Args:
+    func: The Earth Engine function/callable to execute (e.g., ee_obj.getInfo).
+    *args: Positional arguments for the callable.
+    retries: Number of retries before giving up.
+    start_delay_secs: Initial backoff delay in seconds.
+    **kwargs: Keyword arguments for the callable.
+
+  Returns:
+    The result of func(*args, **kwargs).
+  """
+  delay = start_delay_secs
+  for i in range(retries):
+    try:
+      return func(*args, **kwargs)
+    except (ee.EEException, Exception) as e:  # pylint: disable=broad-except
+      # Don't retry on "Total request size" error, as it's not transient.
+      if isinstance(e, ee.EEException) and "Total request size" in str(e):
+        raise e
+      if i == retries - 1:
+        raise
+      # Exponential backoff + jitter.
+      jitter_delay = delay + random.uniform(0, 1)
+      logging.warning(
+          "EE call failed (attempt %d/%d). Retrying in %.2fs: %s",
+          *(i + 1, retries, jitter_delay, e),
+      )
+      time.sleep(jitter_delay)
+      delay *= 2.0

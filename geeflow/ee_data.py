@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
 
 """EE datasets."""
 
-import abc
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 import dataclasses
 import functools
-from typing import Any
 
 from geeflow import ee_algo
+from geeflow.data_sources import custom
+from geeflow.data_sources import ee_base
+from geeflow.data_sources import elevation
 import matplotlib.colors as mcol
 import matplotlib.pylab as plt
 import numpy as np
@@ -28,64 +29,16 @@ import numpy as np
 import ee
 
 
-class EeData(abc.ABC):
-  """Abstract class for EE ImageCollection and Image datasets."""
+EeData = ee_base.EeData
+EeDataFC = ee_base.EeDataFC
 
-  BANDS = []  # Ordered list of bands.
-  VIS_BANDS = []  # Bands for RGB visualization.
-
-  @property
-  @abc.abstractmethod
-  def asset_name(self) -> str:
-    """Returns asset name."""
-
-  @classmethod
-  def stack(cls, data, vis=False) -> np.ndarray:
-    """Returns HWC numpy array with C=(R,G,B,[N])."""
-    bands = cls.VIS_BANDS if vis else cls.BANDS
-    if isinstance(data, dict):
-      d = [data[band] for band in bands if band in data]
-      return np.stack(d, axis=2)  # (H,W,C)
-    raise ValueError(f"Unsupported data type: {type(data)}")
-
-  @classmethod
-  def vis(cls, data, **kwargs) -> np.ndarray:
-    """Returns RGB or single-channel image ready for visualization."""
-    img = cls.stack(data, vis=True)
-    return cls.vis_norm(img, **kwargs)
-
-  @classmethod
-  def vis_norm(cls, img: np.ndarray) -> np.ndarray:
-    """Visualization normalization. Can be overwriting by inheriting classes."""
-    return img
-
-  @property
-  def ic(self):
-    return ee.ImageCollection(self.asset_name)
-
-  @property
-  def im(self):
-    return ee.Image(self.asset_name)
-
-  @property
-  def image(self):
-    return ee.Image(self.asset_name)
-
-
-class EeDataFC(EeData, abc.ABC):
-  """Abstract class for EE FeatureCollection datasets."""
-
-  @property
-  def fc(self):
-    return ee.FeatureCollection(self.asset_name)
-
-  @property
-  def ic(self):
-    raise ValueError("This is a FeatureCollection.")
-
-  @property
-  def im(self):
-    raise ValueError("This is a FeatureCollection.")
+# For backward compatibility (reduce/remove once all configs are migrated):
+CustomFC = custom.CustomFC
+CustomImage = custom.CustomImage
+CustomIC = custom.CustomIC
+NasaDem = elevation.NasaDem
+FABDEM = elevation.FABDEM
+CopDem = elevation.CopDem
 
 
 @dataclasses.dataclass
@@ -264,6 +217,66 @@ class Sentinel2(EeData):
 
 
 @dataclasses.dataclass
+class HLS(EeData):
+  """Harmonized Landsat Sentinel-2 (HLS) datasets (by NASA)."""
+  mode: str = "HLSS30/v002"  # {HLSS30/v002, HLSS30/v002}
+
+  # Blue, green, red, NIR, SWIR1, SWIR2 bands in HLSL30:
+  BANDS = ["B2", "B3", "B4", "B5", "B6", "B7"]
+  # Similar bands for HLSS30:
+  # BANDS = ["B2", "B3", "B4", "B8A", "B11", "B12"]
+  VIS_BANDS = ["B4", "B3", "B2"]
+
+  @property
+  def asset_name(self) -> str:
+    return f"NASA/HLS/{self.mode}"
+
+  @classmethod
+  def im_cloud_mask(cls, image):
+    """HLS Fmask cloud mask."""
+    # https://developers.google.com/earth-engine/datasets/catalog/NASA_HLS_HLSL30_v002#bands
+    # https://developers.google.com/earth-engine/datasets/catalog/NASA_HLS_HLSS30_v002#bands
+    bitmask = int("1110", 2)  # Cloud & shadow bits.
+    is_cloud = image.select("Fmask").bitwiseAnd(bitmask).neq(0)
+    return is_cloud.Not()  # @30m. {0: bad, 1: good}.
+
+
+@dataclasses.dataclass
+class LandsatComposite(EeData):
+  """Landsat (4-9) composite datasets computed on the fly (by EE team).
+
+  Composites for 8 days, 32 days and annual.
+  Starting from 1984 till present.
+  Unified collections across Landsat 4-9 instruments.
+  Temporal compositing: median within each 8-day, 32-day, or annual window.
+
+  Strict filtering applied before compositing, including:
+  - Limit Landsat 7 to 1999-2017 (orbital drift / scene acquisition time)
+  - Omit Landsat 8 data before 2013-05-01 (orbit stability)
+  - Omit scenes with WRS_ROW ≥ 122 (no nighttime images)
+  - Keep only pixels QA-flagged as clear
+  - Omit L4-L7 pixels with ATMOS_OPACITY > 300 (haze)
+  - Omit L8-L9 pixels with any QA_AEROSOL issues
+  - Omit saturated or out-of-bounds pixels
+
+  Landsat surface reflectance composite bands:
+  - blue, green, red, nir, swir1, swir2, thermal
+  Landsat indices: BAI, EVI, NBR, NDVI, NDWI
+  More info:
+  https://jstnbraaten.medium.com/ditch-the-boilerplate-use-earth-engines-on-the-fly-landsat-composites-60fb9abe707c
+
+  Possible modes:
+  - "T1_L2_{8DAY, 32DAY, ANNUAL}{'', _BAI, _EVI, _NBR, _NDVI, _NDWI}"
+  """
+  mode: str = "T1_L2_ANNUAL"
+  BANDS = []
+
+  @property
+  def asset_name(self) -> str:
+    return f"LANDSAT/COMPOSITES/C02/{self.mode}"
+
+
+@dataclasses.dataclass
 class Landsat7(EeData):
   """Landsat7 SR (Surface Reflectance) datasets (1999-2022)."""
   mode: str = "T1_L2"  # "T2_L2"
@@ -366,6 +379,21 @@ class Landsat9(Landsat7):
       # Raw data to calibrated radiance
       ic = ic.map(_landsat_calibrated_radiance).select(self.BANDS)
     return ic
+
+
+@dataclasses.dataclass
+class Landsat5(Landsat7):
+  """Landsat5 raw datasets (1984-03 to 2012-05)."""
+
+  mode: str = "T1_L2"
+  calibrate_radiance: bool = False
+  BANDS = ["SR_B1", "SR_B2", "SR_B3", "SR_B4", "SR_B5", "SR_B7",
+           "QA_PIXEL", "QA_RADSAT"]
+  VIS_BANDS = ["SR_B3", "SR_B2", "SR_B1"]
+
+  @property
+  def asset_name(self) -> str:
+    return f"LANDSAT/LT05/C02/{self.mode}"
 
 
 @dataclasses.dataclass
@@ -593,6 +621,8 @@ class Hansen(EeData):
   @property
   def asset_name(self) -> str:
     # TODO: Update/remove this when the data is properly published.
+    if self.mode == "2025":
+      return "projects/glad/GFC/2025/global_forest_change_2025_v1_13_merged"
     if self.mode == "2024":
       return "projects/glad/GFC/2024/global_forest_change_2024_v1_12_merged"
     return "UMD/hansen/global_forest_change_" + self.mode
@@ -605,88 +635,6 @@ class ModisLaiFpar(EeData):
   @property
   def asset_name(self) -> str:
     return "MODIS/061/MCD15A3H"  # 4-day composite 500m.
-
-
-@dataclasses.dataclass
-class NasaDem(EeData):
-  """NASADEM elevation based on reprocessed and improved SRTM."""
-  # NOTE: Has no coverage for higher latitudes. Use FABDEM or CopDem instead.
-
-  BANDS = ["elevation", "slope", "aspect"]
-
-  @property
-  def asset_name(self) -> str:
-    return "NASA/NASADEM_HGT/001"
-
-  @property
-  def im(self):
-    elevation = ee.Image(self.asset_name).select("elevation")
-    # Elevation above geoid in meters, slope/aspect in deg [0..90], [0..360].
-    return (elevation
-            .addBands(ee.Terrain.slope(elevation))  # pytype: disable=attribute-error
-            .addBands(ee.Terrain.aspect(elevation)))  # pytype: disable=attribute-error
-
-  @property
-  def ic(self):
-    raise ValueError("This is an Image and not a Collection.")
-
-
-@dataclasses.dataclass
-class FABDEM(EeData):
-  """FABDEM v1-0 (Forest And Buildings removed Copernicus DEM)."""
-
-  BANDS = ["elevation", "slope", "aspect"]
-
-  @property
-  def asset_name(self) -> str:
-    return "projects/sat-io/open-datasets/FABDEM"
-
-  @property
-  def im(self):
-    fabdem = ee.ImageCollection(self.asset_name)
-    proj = fabdem.first().projection()
-    elevation = fabdem.mosaic().setDefaultProjection(proj)
-    slope = ee.Terrain.slope(elevation).setDefaultProjection(proj)  # pytype: disable=attribute-error
-    aspect = ee.Terrain.aspect(elevation).setDefaultProjection(proj)  # pytype: disable=attribute-error
-
-    res = ee.Image([elevation, slope, aspect])
-    res = res.rename(["elevation", "slope", "aspect"])
-    return res
-
-  @property
-  def ic(self):
-    raise ValueError("This is an Image and not a Collection.")
-
-
-@dataclasses.dataclass
-class CopDem(EeData):
-  """Copernicus DEM (GLO-30) elevation based on TanDEM-X."""
-
-  BANDS = ["elevation", "slope", "aspect"]
-
-  @property
-  def asset_name(self) -> str:
-    return "COPERNICUS/DEM/GLO30"
-
-  @property
-  def im(self):
-    # ImageCollection consists of spatially disjoint patches that we join for
-    # a single global map, and return as an ee.Image.
-    orig_ic = ee.ImageCollection(self.asset_name)
-    orig_csr = orig_ic.first().projection()
-    elevation = (orig_ic
-                 .mosaic()  # Results in 1 deg cells, and requires...
-                 .reproject(orig_csr)  # ...reprojection for slope/aspect.
-                 .select("DEM")
-                 .rename(["elevation"]))
-    # Elevation above geoid in meters, slope/aspect in deg [0..90], [0..360].
-    return (elevation
-            .addBands(ee.Terrain.slope(elevation))  # pytype: disable=attribute-error
-            .addBands(ee.Terrain.aspect(elevation)))  # pytype: disable=attribute-error
-
-  @property
-  def ic(self):
-    raise ValueError("This is considered as an Image and not a Collection.")
 
 
 @dataclasses.dataclass
@@ -1117,143 +1065,6 @@ class Ecoregions(EeDataFC):
   @property
   def asset_name(self) -> str:
     return "RESOLVE/ECOREGIONS/2017"
-
-
-@dataclasses.dataclass
-class CustomFC(EeDataFC):
-  """A custom source that loads a FeatureCollection.
-
-  An example:
-    c.gedi = copy.deepcopy(all_sources.CustomFC)
-    c.gedi.kw.asset_name =
-        "projects/computing-engine-190414/assets/gedi_nico_all_predictions"
-    c.gedi.select = ["canopy_height"]
-    c.gedi.scale = 10
-    c.gedi.algo = ee_algo.fc_to_image
-
-  Attributes:
-    asset_name: A name or a list of names of the assets to load.
-    filters: A list of filters to apply to the asset.
-    buffer_points: How many meters to buffer the point features.
-    buffer: How many meters to buffer all features (on top of buffer_points).
-    use_bounds: Whether to use bounds instead of actual geometries.
-    set_property: A tuple of (property_name, property_value) to set on the
-      features.
-  """
-  asset_name: Sequence[str] | str = ""  # Needs to be specified.
-  filters: Sequence[tuple[str, Any]] | None = None
-  buffer_points: int = 0
-  buffer: int = 0
-  # NOTE: Currently ".bounds" methiod is very slow and could incurr very
-  # significant slowdown. For more context, see:
-  # (internal link)
-  # Only use on small collections.
-  use_bounds: bool = False
-  set_property: tuple[str, Any] | None = None
-
-  @property
-  def fc(self):
-    if isinstance(self.asset_name, (tuple, list)):
-      fc = ee.FeatureCollection(
-          [ee.FeatureCollection(x) if isinstance(x, str) else CustomFC(**x).fc
-           for x in self.asset_name])
-      fc = fc.flatten()
-    else:
-      fc = ee.FeatureCollection(self.asset_name)
-    if self.filters:
-      for k, v in self.filters:
-        if isinstance(v, (tuple, list)):
-          if k.startswith("!"):
-            fc = fc.filter(ee.Filter.inList(k[1:], v).Not())
-          else:
-            fc = fc.filter(ee.Filter.inList(k, v))
-        else:
-          if k.startswith("<="):
-            fc = fc.filter(ee.Filter.lte(k[2:], v))
-          elif k.startswith("<"):
-            fc = fc.filter(ee.Filter.lt(k[1:], v))
-          elif k.startswith(">="):
-            fc = fc.filter(ee.Filter.gte(k[2:], v))
-          elif k.startswith(">"):
-            fc = fc.filter(ee.Filter.gt(k[1:], v))
-          elif k.startswith("!~"):
-            fc = fc.filter(ee.Filter.stringContains(k[2:], v).Not())
-          elif k.startswith("~"):
-            fc = fc.filter(ee.Filter.stringContains(k[1:], v))
-          elif k.startswith("!"):
-            fc = fc.filter(ee.Filter.neq(k[1:], v))
-          else:
-            fc = fc.filter(ee.Filter.eq(k, v))
-    if self.buffer_points > 0:
-      fc_points = fc.filter(ee.Filter.hasType(".geo", "Point"))
-      fc_not_points = fc.filter(ee.Filter.hasType(".geo", "Point").Not())
-      fc_points = fc_points.map(lambda x: x.buffer(self.buffer_points))
-      if self.use_bounds:
-        fc_points = fc_points.map(lambda x: x.bounds())
-      fc = ee.FeatureCollection([fc_points, fc_not_points]).flatten()
-    # NOTE: We allow for negative values too.
-    if self.buffer:
-      fc = fc.map(lambda x: x.buffer(self.buffer))
-    if self.set_property:
-      fc = fc.map(lambda x: x.set(self.set_property[0], self.set_property[1]))
-    return fc
-
-
-@dataclasses.dataclass
-class CustomImage(EeData):
-  """A custom source that loads an image.
-
-  An example:
-    c.primary_forest = copy.deepcopy(all_sources.CustomImage)
-    c.primary_forest.kw.asset_name =
-        "projects/computing-engine-190414/assets/arbaro/suso/primary_forests"
-  """
-  asset_name: str = ""  # Needs to be specified.
-  im_fn: Callable[[str], ee.Image] | None = None
-
-  @property
-  def im(self):
-    if self.im_fn:
-      return self.im_fn(self.asset_name)
-    return ee.Image(self.asset_name)
-
-  @property
-  def ic(self):
-    raise ValueError("This is considered as an Image and not a Collection.")
-
-
-@dataclasses.dataclass
-class CustomIC(EeData):
-  """A custom source that loads an IC.
-
-  An example:
-    c.google = copy.deepcopy(all_sources.CustomImage)
-    c.google.kw.asset_name =
-        "projects/satellite-segmentation/assets/labels"
-  """
-  # asset_name could refer to:
-  #  - str: a single ImageCollection (merge should be False)
-  #  - list/tuple: list of Image assets (merge should be False)
-  #  - list/tuple: list of ImageCollection assets (merge should be True)
-  asset_name: str | list[str] = ""  # Needs to be specified.
-  merge: bool = False
-  ic_fn: Callable[[str | list[str]], ee.ImageCollection] | None = None
-
-  @property
-  def im(self):
-    raise ValueError("This is considered as an IC and not an Image.")
-
-  @property
-  def ic(self):
-    if self.ic_fn:
-      assert not self.merge, "merge should be handled by ic_fn if ic_fn given"
-      return self.ic_fn(self.asset_name)
-    if self.merge and not isinstance(self.asset_name, str):
-      ic = ee.ImageCollection(self.asset_name[0])
-      for asset_name in self.asset_name[1:]:
-        ic = ic.merge(ee.ImageCollection(asset_name))
-      return ic
-    return ee.ImageCollection(self.asset_name)
 
 
 @dataclasses.dataclass

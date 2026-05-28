@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,20 +24,9 @@ import numpy as np
 
 class EeDataTest(parameterized.TestCase):
 
-  @mock.patch.object(ee_data, "ee")
-  def test_qiu_disturbance(self, mock_ee):
-    qiu = ee_data.QiuDisturbance()
-    self.assertEqual(
-        qiu.asset_name, "users/ShiQiu/product/conus/disturbance/v081/APRI"
-    )
-    _ = qiu.im  # Call property to trigger the function execution.
-    self.assertGreater(mock_ee.ImageCollection.call_count, 0)
-    self.assertGreater(mock_ee.Image.call_count, 0)
-    self.assertGreater(mock_ee.Reducer.sum.call_count, 0)
-
   @parameterized.parameters(("L2A", "COPERNICUS/S2_SR_HARMONIZED"),
                             ("L1C", "COPERNICUS/S2_HARMONIZED"),)
-  @mock.patch.object(ee_data, "ee")
+  @mock.patch.object(ee_data.ee_base, "ee")
   def test_s2_asset(self, mode, asset_name, mock_ee):
     s2 = ee_data.Sentinel2(mode)
     self.assertEqual(s2.asset_name, asset_name)

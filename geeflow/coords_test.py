@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -152,6 +152,25 @@ class CoordsTest(parameterized.TestCase):
     )
     self.assertEqual(geotransform_info["geotransform"], expected_geotransform)
     self.assertEqual(geotransform_info["epsg"], expected_epsg)
+
+  @parameterized.named_parameters(
+      ("floor", (1.1, 2.2, 3, "A"), 10, (5.0, 5.0, 3, "A")),
+      ("ceil", (11.1, 12.2, 3, "A"), 10, (15.0, 15.0, 3, "A")),
+      ("center", (5, 5, 3, "A"), 10, (5.0, 5.0, 3, "A")),
+      ("zero", (0, 0, 3, "A"), 10, (5.0, 5.0, 3, "A")),
+      ("neg", (-1.1, -2.2, 3, "A"), 10, (-5.0, -5.0, 3, "A")),
+  )
+  def test_snap_utm(self, utm_coord, grid_size, expected):
+    self.assertEqual(expected, coords.snap_utm(utm_coord, grid_size))
+
+  @parameterized.named_parameters(
+      ("10k", 50, 10, 10000, [49.9626320, 10.0457053]),
+      ("1k", 50, 10, 1000, [50.0035288, 9.9977505]),
+  )
+  def test_snap_latlon_to_utm(self, lat, lon, grid_size, expected):
+    self.assertSequenceAlmostEqual(
+        expected, coords.snap_latlon_to_utm(lat, lon, grid_size), places=7
+    )
 
 
 if __name__ == "__main__":

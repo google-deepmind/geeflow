@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,6 +39,16 @@ def sample_roi(*_, **__):  # pylint: disable=unused-argument
   """Placeholder for backwards compatibility."""
 
 
+def get_image_from_item(
+    item: dict[str, Any], asset_id_key: str, select: Sequence[str]
+) -> ee.Image:
+  """Returns an image from an item."""
+  im = ee.Image(item[asset_id_key])
+  if select:
+    return im.select(select)
+  return im
+
+
 def _preprocess_ic(
     roi: ee.Geometry,
     ic: ee.ImageCollection,
@@ -69,20 +79,27 @@ def _preprocess_ic(
   if limit:
     ic = ic.limit(limit)
   if dummy_im:
-    ic = ee.ImageCollection(ee.Algorithms.If(ic.size().neq(0), ic,
-                                             ee.ImageCollection(dummy_im)))
+    ic = ee.ImageCollection(
+        ee.Algorithms.If(ic.size().neq(0), ic, ee.ImageCollection(dummy_im))
+    )
   return ic
 
 
 def fetch_image_collection_properties(
     collection: ee.ImageCollection | ee.FeatureCollection,
     additional_properties: Sequence[str] = (),
+    page_size: int = 1000,
+    drop_unknown_timestamps: bool = True,
 ):
   """Fetches properties of all the images, sorted by timestamp if available.
 
   Args:
     collection: The input image collection.
     additional_properties: Additional property names to fetch.
+    page_size: The maximum number of results per page. The server may return
+      fewer images than requested. If unspecified, the page size default is 1000
+      results per page.
+    drop_unknown_timestamps: Whether to drop images with unknown timestamps.
 
   Returns:
     List of dicts containing the retrieved properties for each image in the
@@ -102,7 +119,7 @@ def fetch_image_collection_properties(
     return f
 
   feature_col = ee.FeatureCollection(collection).map(remap_features)
-  params = {"expression": feature_col}
+  params = {"expression": feature_col, "pageSize": page_size}
   features = []
   while True:
     response = ee.data.computeFeatures(params)
@@ -122,6 +139,8 @@ def fetch_image_collection_properties(
           f["properties"][property_name] = f["properties"].pop(remapped_name)
       f["properties"].setdefault(property_name, "unknown")
   features = [f["properties"] for f in features]
+  if drop_unknown_timestamps:
+    features = [f for f in features if f[_TIMESTAMP_PROP] != "unknown"]
   # Sort by timestamp if available.
   return sorted(features, key=lambda x: x.get(_TIMESTAMP_PROP, 0))
 
@@ -145,6 +164,8 @@ def fc_to_image(
     reducer: str = "max",
     drop_missing_classes: bool = True,
     missing_class_value: int = -1,
+    unmask_value: int | None = None,
+    dtype: str | None = None,
 ) -> ee.Image:
   """Returns FC data.
 
@@ -160,16 +181,21 @@ def fc_to_image(
       is not in class_names (be careful with multiple props).
     missing_class_value: Value to use for missing classes if
       `drop_missing_classes` is False.
+    unmask_value: If provided, will unmask the image with this value.
+    dtype: If provided, will cast the image to this dtype.
 
   Returns:
     An np.ndarray with dimensions (N, H, W, C) or (H, W, C) and its mask.
   """
 
   def to_scalar(feature, props, dic):
-    return feature.set(props, ee.Dictionary(dic).get(
-        feature.get(props), missing_class_value))
+    return feature.set(
+        props, ee.Dictionary(dic).get(feature.get(props), missing_class_value)
+    )
 
   fc = fc.filterBounds(roi)
+  fc = fc.map(lambda f: f.setGeometry(f.geometry().intersection(roi, 1e-3)))
+
   if FEATURE_EXISTS_INTEGER_KEY in props:
     fc = fc.map(lambda f: f.set(FEATURE_EXISTS_INTEGER_KEY, 1))
   if class_names is not None:
@@ -181,8 +207,27 @@ def fc_to_image(
       if drop_missing_classes:
         fc = fc.filter(ee.Filter.inList(key, ee.List(list(classes))))
       fc = fc.map(lambda f: to_scalar(feature=f, props=key, dic=dic))  # pylint: disable=cell-var-from-loop
-  im = fc.reduceToImage(properties=props,
-                        reducer=get_fc_reduce_fn(reducer).forEach(props))
+  im = fc.reduceToImage(
+      properties=props, reducer=get_fc_reduce_fn(reducer).forEach(props)
+  )
+  if unmask_value is not None:
+    im = im.unmask(unmask_value, False)
+
+  # If dtype is not provided, but FEATURE_EXISTS_INTEGER_KEY is in props, cast
+  # the image to byte as it's a binary output.
+  if (
+      dtype is None
+      and FEATURE_EXISTS_INTEGER_KEY in props
+      and len(props) == 1
+  ):
+    dtype = "uint8"
+
+  if dtype == "uint8":
+    im = im.toByte()
+  elif dtype is not None:
+    # All properties are converted to the same dtype.
+    im = im.cast(dict.fromkeys(props, dtype))
+
   return im
 
 
@@ -215,8 +260,9 @@ def get_ccdc(
   im = ccdc_utils.im_add_ccdc_bands_1d(ccdc.select(bands_1d), num_segments)
   bands_2d = [band for band in bands if band.endswith("_coefs")]
   if bands_2d:
-    im = ccdc_utils.im_add_ccdc_bands_2d(ccdc.select(bands_2d), num_segments,
-                                         im)
+    im = ccdc_utils.im_add_ccdc_bands_2d(
+        ccdc.select(bands_2d), num_segments, im
+    )
   assert im is not None
   return im
 
@@ -268,18 +314,24 @@ def get_ic_reduce_fn(
   elif name == "first":
     return lambda x: x.first()
   elif name.startswith("reduceResolutionTo"):
-    if name == "reduceResolutionToMeanAndStd":
-      reducer = ee.Reducer.mean().combine(ee.Reducer.stdDev(),
-                                          sharedInputs=True)
-    elif name == "reduceResolutionToMeanAndStdAndMax":
+    if name == "reduceResolutionToMean":
+      reducer = ee.Reducer.mean()
+    elif name == "reduceResolutionToMeanAndStd":
       reducer = ee.Reducer.mean().combine(
-          ee.Reducer.stdDev(), sharedInputs=True).combine(
-              ee.Reducer.max(), sharedInputs=True)
+          ee.Reducer.stdDev(), sharedInputs=True
+      )
+    elif name == "reduceResolutionToMeanAndStdAndMax":
+      reducer = (
+          ee.Reducer.mean()
+          .combine(ee.Reducer.stdDev(), sharedInputs=True)
+          .combine(ee.Reducer.max(), sharedInputs=True)
+      )
     elif name == "reduceResolutionToMax":
       reducer = ee.Reducer.max()
     else:
       raise ValueError(f"Reducer `{name}` not supported yet.")
     assert roi is not None
+
     def rr(im):
       # When we fetch a huge plot (say 6400m x 6400m) and a source is at very
       # high resolution (say 0.5m) and we use reduceResolutionTo* reducer,
@@ -288,12 +340,13 @@ def get_ic_reduce_fn(
       # the same projection (which apparently does not trigger the check) and
       # then reproject to the final scale.
       if "pre_reduce_resolution" in kwargs:
-        im = im.reproject(im.projection().atScale(
-            kwargs["pre_reduce_resolution"])).reduceResolution(
-                reducer=reducer, maxPixels=4096)
-      return im.reproject(roi.projection().atScale(
-          im.projection().nominalScale())).reduceResolution(
-              reducer=reducer, maxPixels=4096)
+        im = im.reproject(
+            im.projection().atScale(kwargs["pre_reduce_resolution"])
+        ).reduceResolution(reducer=reducer, maxPixels=4096)
+      return im.reproject(
+          roi.projection().atScale(im.projection().nominalScale())
+      ).reduceResolution(reducer=reducer, maxPixels=4096)
+
     def reduce_resolution(im):
       if isinstance(im, ee.ImageCollection):
         im = im.map(rr)
@@ -301,22 +354,34 @@ def get_ic_reduce_fn(
       else:
         im = rr(im)
       return im
+
     return reduce_resolution
   elif name == "percentile":
     kwargs.setdefault("percentiles", [10, 25, 50, 75, 90])
     return lambda x: x.reduce(ee.Reducer.percentile(**kwargs))
   elif name.startswith("with_most_valid_pixels_in_band_0"):
+
     def set_valid_pixel_count(image):
-      num = image.select(0).reduceRegion(
-          ee.Reducer.count(), maxPixels=1e9, scale=scale, geometry=roi,
-          **kwargs).get(image.bandNames().get(0))
+      num = (
+          image.select(0)
+          .reduceRegion(
+              ee.Reducer.count(),
+              maxPixels=1e9,
+              scale=scale,
+              geometry=roi,
+              **kwargs,
+          )
+          .get(image.bandNames().get(0))
+      )
       return image.set("numValidPixels", num)
+
     def mask(ic):
       ic = ic.map(set_valid_pixel_count)
       ic = ic.sort("numValidPixels", name.endswith("_mosaic"))
       if name.endswith("_mosaic"):
         return ic.mosaic()
       return ic.first()
+
     # Long story short: when using dummy_im we can get an image with a footprint
     # that is very far away from the ROI. And if we are using UTM projection
     # reduceRegion could cause very weird behaviors. As a "solution" we handle
@@ -327,6 +392,7 @@ def get_ic_reduce_fn(
     # TODO: drop usage of dummy_im
     def _fix_dummy_im(ic):
       return ee.Image(ee.Algorithms.If(ic.size().eq(1), ic.first(), mask(ic)))
+
     return _fix_dummy_im
   raise ValueError(f"Unrecognized reducer name `{name}`")
 
@@ -346,8 +412,17 @@ def ic_sample(
     date_range: tuple[str, str] | None = None,
 ) -> tuple[Sequence[ee.Image], dict[str, np.ndarray]]:
   """Returns ROI samples for all filtered IC images."""
-  ic = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
-                      filter_bounds, roi_filter_fn, date_range=date_range)
+  ic = _preprocess_ic(
+      roi,
+      ic,
+      cloud_mask_fn,
+      sort_by,
+      ascending,
+      bands,
+      filter_bounds,
+      roi_filter_fn,
+      date_range=date_range,
+  )
   ims, metadata = [], collections.defaultdict(list)
   sorted_image_properties = fetch_image_collection_properties(
       ic, additional_properties
@@ -383,11 +458,21 @@ def ic_sample_reduced(
     **reduce_fn_kwargs,
 ) -> ee.Image:
   """Returns ROI samples reduced over the whole IC."""
-  ic = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
-                      filter_bounds, roi_filter_fn, dummy_im,
-                      date_range=date_range)
-  reduce_fn = get_ic_reduce_fn(reduce_fn, scale=scale, roi=roi,
-                               **reduce_fn_kwargs)
+  ic = _preprocess_ic(
+      roi,
+      ic,
+      cloud_mask_fn,
+      sort_by,
+      ascending,
+      bands,
+      filter_bounds,
+      roi_filter_fn,
+      dummy_im,
+      date_range=date_range,
+  )
+  reduce_fn = get_ic_reduce_fn(
+      reduce_fn, scale=scale, roi=roi, **reduce_fn_kwargs
+  )
   return reduce_fn(ic)
 
 
@@ -421,15 +506,26 @@ def ic_sample_date_ranges(
     ts.append(int(start.timestamp() + end.timestamp()) // 2 * 1000)
 
     dates_range = start.strftime(r"%Y-%m-%d"), end.strftime(r"%Y-%m-%d")
-    ic_t = _preprocess_ic(roi, ic, cloud_mask_fn, sort_by, ascending, bands,
-                          filter_bounds, roi_filter_fn, dummy_im, dates_range,
-                          limit=limit)
+    ic_t = _preprocess_ic(
+        roi,
+        ic,
+        cloud_mask_fn,
+        sort_by,
+        ascending,
+        bands,
+        filter_bounds,
+        roi_filter_fn,
+        dummy_im,
+        dates_range,
+        limit=limit,
+    )
     ims.append(reduce_fn(ic_t))
   return ims, dict(timestamps=np.array(ts))
 
 
-def add_roi_validity(im: ee.Image, roi: ee.Geometry, band: str = "R",
-                     scale: int | None = None) -> ee.Image:
+def add_roi_validity(
+    im: ee.Image, roi: ee.Geometry, band: str = "R", scale: int | None = None
+) -> ee.Image:
   """Returns im with `validity` property set to percentage of non-0 values."""
   im_orig = im
   if scale:
@@ -444,5 +540,6 @@ def add_roi_validity(im: ee.Image, roi: ee.Geometry, band: str = "R",
 def add_abs_time_difference(im: ee.Image, ref_date: ee.Date) -> ee.Image:
   """Returns im with `date_difference` property set to ms from ref_date."""
   abs_time_difference = (
-      ee.Number(im.get("system:time_start")).subtract(ref_date.millis()).abs())
+      ee.Number(im.get("system:time_start")).subtract(ref_date.millis()).abs()
+  )
   return im.set("abs_time_difference", abs_time_difference)

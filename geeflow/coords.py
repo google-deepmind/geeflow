@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,9 @@ import shapely.ops
 
 import ee
 DEG_AT_EQUATOR_IN_M = 111_111.111
+
+# easting, northing, zone_number, zone_letter
+UtmCoord = tuple[float, float, int, str]
 
 
 def get_lat_lon_roi(lat, lon, width_m=None, width_deg=None):
@@ -248,3 +251,32 @@ def get_geotransform_info(
   epsg = f"EPSG:{epsg_code}"
 
   return dict(geotransform=geotransform, epsg=epsg)
+
+
+def snap_utm(utm_coord: UtmCoord, grid_size: int) -> UtmCoord:
+  """Snaps UTM coordinates to the center of a grid of size grid_size.
+
+  Args:
+    utm_coord: A tuple representing UTM coordinates (easting, northing,
+      zone_number, zone_letter).
+    grid_size: The size of the grid cells in UTM units.
+
+  Returns:
+    A new UtmCoord tuple with easting and northing snapped to the center of a
+    grid cell.
+  """
+  utm_coord = (
+      (utm_coord[0] // grid_size) * grid_size + (grid_size // 2),
+      (utm_coord[1] // grid_size) * grid_size + (grid_size // 2),
+      utm_coord[2],
+      utm_coord[3],
+  )
+  return utm_coord
+
+
+def snap_latlon_to_utm(
+    lat: float | np.ndarray, lon: float | np.ndarray, grid_size: int
+) -> tuple[float, float]:
+  """Snaps a (lat, lon) coordinate to the center of a UTM grid."""
+  utm_coord = utm_lib.from_latlon(lat, lon)
+  return utm_lib.to_latlon(*snap_utm(utm_coord, grid_size))

@@ -24,6 +24,7 @@ dependencies = [
     "apache-beam[gcp]",
     "dataclasses-json",
     "earthengine-api",
+    "geopandas",
     "jax",
     "matplotlib",
     "ml_collections",

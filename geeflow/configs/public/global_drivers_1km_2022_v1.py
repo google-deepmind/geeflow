@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,10 +42,12 @@ def get_sources_config(scale: int):
   c.hansen = utils.get_source_config("Hansen", "im")
   c.hansen.scale = scale
   c.hansen.kw.mode = "2022_v1_10"
+  c.hansen.algo = "sample_roi"
 
   c.tree_cover_loss_due_to_fire = utils.get_source_config(
       "TreeCoverLossDueToFire", "im")
   c.tree_cover_loss_due_to_fire.scale = scale
+  c.tree_cover_loss_due_to_fire.algo = "sample_roi"
 
   c.mining_combined = utils.get_source_config("CustomFC", "fc")
   c.mining_combined.kw.asset_name = "users/radoststanimirova/mining_combined"
@@ -65,20 +67,24 @@ def get_sources_config(scale: int):
       times.adjust_for_hemisphere,
       north=[(f"{y}-06-01", 3, 0) for y in [2018, 2020, 2022]],
       south=[(f"{y-1}-12-01", 3, 0) for y in [2018, 2020, 2022]])
+  c.s2.algo = "ic_sample_date_ranges"
 
   c.dw = utils.get_source_config("DynamicWorld", "ic")
   c.dw.scale = scale
   c.dw.select = ("grass", "crops", "shrub_and_scrub")
   c.dw.sampling_kw.reduce_fn = "mean"
   c.dw.date_ranges = [(f"{y}-01-01", 12, 0) for y in [2016, 2019, 2022]]
+  c.dw.algo = "ic_sample_date_ranges"
 
   c.ghs_pop = utils.get_source_config("GHSPop", "ic")
   c.ghs_pop.scale = scale
   c.ghs_pop.select = "population_count"
+  c.ghs_pop.algo = "ic_sample"
 
   c.elevation = utils.get_source_config("FABDEM", "im")
   c.elevation.scale = scale
   c.elevation.select = ("elevation", "slope", "aspect")
+  c.elevation.algo = "sample_roi"
 
   return c
 

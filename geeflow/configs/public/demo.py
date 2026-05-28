@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited.
+# Copyright 2026 DeepMind Technologies Limited.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,16 +39,19 @@ def get_sources_config():
   c.s2.sampling_kw.reduce_fn = "median"
   c.s2.sampling_kw.cloud_mask_fn = ee_data.Sentinel2.im_cloud_score_plus_mask
   c.s2.date_ranges = FC_DATE_RANGES
+  c.s2.algo = "ic_sample_date_ranges"
 
   c.s1 = utils.get_source_config("Sentinel1", "ic")
   c.s1.scale = 10
   c.s1.kw = {"mode": "IW", "pols": ("VV", "VH"), "orbit": "both"}
   c.s1.sampling_kw.reduce_fn = "mean"
   c.s1.date_ranges = FC_DATE_RANGES
+  c.s1.algo = "ic_sample_date_ranges"
 
   c.elevation = utils.get_source_config("NasaDem", "im")
   c.elevation.scale = 30
   c.elevation.select = ("elevation", "slope", "aspect")
+  c.elevation.algo = "sample_roi"
   return c
 
 

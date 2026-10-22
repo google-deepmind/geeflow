@@ -29,6 +29,7 @@ from geeflow import ccdc_utils
 from geeflow import coords
 from geeflow import ee_algo
 from geeflow import pipelines
+from geeflow import scalar_fetch
 from geeflow import times
 from geeflow import utils
 import ml_collections
@@ -135,7 +136,7 @@ class GetInfo(beam.DoFn):
     self.band_names = dict()
 
   def start_bundle(self):
-    # Initialize and authenticate EE on the flume workers.
+    # Initialize and authenticate EE on the Beam workers.
     utils.initialize_ee(self.ee_project)
     sources = pipelines.pipeline_sources(self.config)
     self.process_fn_dict = pipelines.get_requests_fn(self.config, sources)
@@ -233,24 +234,36 @@ class GetInfo(beam.DoFn):
     )
 
   def process(self, item):
+    if item.get("failed", False):
+      yield item
+      return
     start = time.time()
-    rois = pipelines.pipeline_item_to_rois(self.config, item)
-    requests, metadata = self.process_fn_dict(rois, item)
-    if self.num_items_processed:
-      self.num_items_processed.inc()
-    # b/393557949 - We are making a ee.data.computePixels per image. However,
-    # we could group multiple calls together if they have the same roi, crs,
-    # and scale. Note this would require to account for the maximum number of
-    # bytes per request (~50MB).
-    pixels = functools.reduce(
-        lambda x, y: x | y, (self._make_request(r, item) for r in requests)
-    )
-    if time.time() - start > 20:
-      logging.info("Long EE query: %s for %s", time.time() - start, item)
-    if self.query_duration_distribution:
-      self.query_duration_distribution.update(time.time() - start)
+    try:
+      rois = pipelines.pipeline_item_to_rois(self.config, item)
+      requests, metadata = self.process_fn_dict(rois, item)
+      if self.num_items_processed:
+        self.num_items_processed.inc()
+      # Note: We are making an ee.data.computePixels per image. However,
+      # we could group multiple calls together if they have the same roi, crs,
+      # and scale. Note this would require to account for the maximum number of
+      # bytes per request (~50MB).
+      pixels = functools.reduce(
+          lambda x, y: x | y, (self._make_request(r, item) for r in requests)
+      )
+      if time.time() - start > 20:
+        logging.info("Long EE query: %s for %s", time.time() - start, item)
+      if self.query_duration_distribution:
+        self.query_duration_distribution.update(time.time() - start)
 
-    yield _process_ee_query_result(pixels, metadata, self.config)
+      yield _process_ee_query_result(pixels, metadata, self.config)
+    except Exception as e:  # pylint: disable=broad-except
+      if self.config.get("labels", {}).get("skip_failing_plots", False):
+        logging.error("Failed to process item %s: %s", item, e)
+        if self.num_failures_counter:
+          self.num_failures_counter.inc()
+        yield {"failed": True, "id": item.get("id"), "error": str(e)}
+      else:
+        raise
 
 
 def _process_ee_query_result(pixels, metadata, config) -> dict[str, np.ndarray]:
@@ -262,8 +275,12 @@ def _process_ee_query_result(pixels, metadata, config) -> dict[str, np.ndarray]:
 
   # Concatenate the channels from the same source on the last dimension.
   tmp = collections.defaultdict(list)
+  band_names = collections.defaultdict(list)
   for k in list(pixels):
-    name, *_ = k.split("/")
+    name, *band_name = k.split("/")
+    # Extract band names (part after '/') for non-mask sources.
+    if "/" in k and not name.endswith("_mask"):
+      band_names[name].append("/".join(band_name))
     tmp[name].append(pixels.pop(k))
   pixels = toolz.valmap(np.dstack, tmp)
 
@@ -284,9 +301,25 @@ def _process_ee_query_result(pixels, metadata, config) -> dict[str, np.ndarray]:
       tmp[name].append(data[k])
   pixels = toolz.valmap(np.array, tmp)
 
+  # Add band names for each source that produces image data.
+  for name in config.sources:
+    if pipelines.get_algo_from_config(config, name) == ee_algo.get_ccdc:
+      continue  # CCDC has synthetic band names handled separately.
+    source_bands = []
+    for bn_key, bn_list in band_names.items():
+      # For temporal sources (with "#" markers), use band names from the first
+      # timestep since all timesteps have the same bands.
+      bare_name = bn_key.split("#")[0]
+      if bare_name == name and not source_bands:
+        source_bands = bn_list
+    if source_bands:
+      pixels[f"{name}_bands"] = np.array(source_bands)
+
   # Ensure that assets with variable number of timesteps are in the right
   # format.
-  for k in set(k.replace("_mask", "") for k in pixels):
+  for k in config.sources:
+    if k not in pixels:
+      continue
     if pipelines.get_algo_from_config(config, k) in [
         ee_algo.ic_sample,
         ee_algo.ic_sample_date_ranges,
@@ -313,6 +346,9 @@ def _has_forest_loss(feature):
 
 
 def apply_filters(feature, config):
+  """Apply filters to feature."""
+  if feature.get("failed", False):
+    return False
   export_config = config.get("export", {})
   if export_config.get("filter_empty_forest_loss", False):
     if not _has_forest_loss(feature):
@@ -336,7 +372,7 @@ def apply_transforms(feature, config, cropped_features_counter=None):
       for k in keys:
         del feature[k]
 
-  default_image_width = config.labels.img_width_m
+  default_image_width = config.labels.get("img_width_m")
   for key, value in config.sources.items():
     if value.get("scalar", False): continue
     image_width = value.get("img_width_m", default_image_width)
@@ -392,7 +428,12 @@ def apply_transforms(feature, config, cropped_features_counter=None):
 
 def process_example(x, config):
   """Process a single example."""
-  for k in config.get("skip_keys", []) + ["split"]:
+  tfds_id_keys = list(config.labels.get("tfds_id_keys", ("id",)))
+  if "__path" in x and "__path" not in tfds_id_keys:
+    tfds_id_keys.insert(0, "__path")
+  key = "-".join(map(str, (x[k] for k in tfds_id_keys)))
+
+  for k in list(config.get("skip_keys", [])) + ["split", "__path"]:
     x.pop(k, None)
   out = {}
   for k, v in x.items():
@@ -401,6 +442,9 @@ def process_example(x, config):
       dtype = np.uint8
     elif k.endswith("_timestamps"):
       dtype = np.int64
+    elif k.endswith("_bands"):
+      out[k] = list(v)  # Band names are strings - no conversion needed.
+      continue
     elif config.sources.get(k):
       dtype = config.sources[k].get("dtype")
     t = np.array(v, dtype=dtype)
@@ -420,8 +464,6 @@ def process_example(x, config):
     else:
       # Keep scalars as they are.
       out[k] = v
-  tfds_id_keys = config.labels.get("tfds_id_keys", ("id",))
-  key = "-".join(map(str, (x[k] for k in tfds_id_keys)))
   return (key, out)
 
 
@@ -431,9 +473,16 @@ def process_single_item(
     ee_project: str = "skip",
 ) -> dict[str, Any]:
   """Process a single item outside of a beam pipeline."""
-  get_info = GetInfo(ee_project, config)
-  get_info.start_bundle()
-  feature_data = next(get_info.process(item))
+  feature_data = dict(item)
+  scalar_config, non_scalar_config = scalar_fetch.split_scalar_config(config)
+  if scalar_config.sources:
+    sample_scalars = scalar_fetch.SampleScalarSources(ee_project, scalar_config)
+    sample_scalars.start_bundle()
+    feature_data = next(iter(sample_scalars.process([feature_data])))
+  if non_scalar_config.sources:
+    get_info = GetInfo(ee_project, non_scalar_config)
+    get_info.start_bundle()
+    feature_data = next(get_info.process(feature_data))
   feature_data = apply_transforms(feature_data, config)
   if post_process_map := config.get("post_process_map"):
     if isinstance(post_process_map, beam.DoFn):

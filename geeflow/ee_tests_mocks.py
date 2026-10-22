@@ -115,7 +115,7 @@ class MockEEImage:
 
 
 # Mock EE classes automatically (to be used in tests only).
-ee.Image = MockEEImage
-ee.Array = MockEEArray
-ee.String = MockEEString
-ee.List = MockEEList
+ee.Image = MockEEImage  # pyrefly: ignore[bad-assignment]
+ee.Array = MockEEArray  # pyrefly: ignore[bad-assignment]
+ee.String = MockEEString  # pyrefly: ignore[bad-assignment]
+ee.List = MockEEList  # pyrefly: ignore[bad-assignment]

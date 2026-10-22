@@ -72,14 +72,14 @@ def make_tza(d: datetime.datetime) -> datetime.datetime:
 
 def to_datetime(d: str, dt_format: str = DATE_FORMAT) -> datetime.datetime:
   """Parses string into timezone-aware datetime object."""
-  d = datetime.datetime.strptime(d, dt_format)
-  return make_tza(d)
+  d = datetime.datetime.strptime(d, dt_format)  # pyrefly: ignore[bad-assignment]
+  return make_tza(d)  # pyrefly: ignore[bad-argument-type]
 
 
 def _parse_start(start) -> datetime.datetime:
   """Parses start date into timezone-aware datetime object."""
   if isinstance(start, (float, int, np.number)):
-    return  millis_to_datetime(start)
+    return  millis_to_datetime(start)  # pyrefly: ignore[bad-argument-type]
   if isinstance(start, str):
     return to_datetime(start, DATE_FORMAT)
   return make_tza(start)
@@ -141,6 +141,20 @@ def outer_dates(date_ranges: list[tuple[str, int]], to_str=True):
   if to_str:
     return to_datestr(min(dates)), to_datestr(max(dates))
   return min(dates), max(dates)
+
+
+def resolve_date_ranges(
+    date_ranges: Sequence[tuple[str, int, int]],
+) -> tuple[list[tuple[str, str]], np.ndarray]:
+  """Resolves `date_ranges` into `(start, end)` strings and midpoint timestamps (ms)."""
+  windows = []
+  ts = []
+  for start_str, months, days in date_ranges:
+    start = to_datetime(start_str)
+    end = start + relativedelta.relativedelta(months=months, days=days)
+    windows.append((to_datestr(start), to_datestr(end)))
+    ts.append(int(start.timestamp() + end.timestamp()) // 2 * 1000)
+  return windows, np.array(ts, dtype=np.int64)
 
 
 def date_range_mean(dr: ee.DateRange) -> ee.Number:

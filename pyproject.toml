@@ -24,6 +24,7 @@ dependencies = [
     "apache-beam[gcp]",
     "dataclasses-json",
     "earthengine-api",
+    "einops",
     "geopandas",
     "jax",
     "matplotlib",
@@ -35,10 +36,12 @@ dependencies = [
     "shapely",
     "tensorflow",
     "tensorflow_datasets",
+    "toolz",
+    "tqdm",
     "utm",
 ]
 
-# `version` is automatically set by flit to use `jeo.__version__`
+# `version` is automatically set by flit to use `geeflow.__version__`
 dynamic = ["version"]
 
 [project.urls]
@@ -53,6 +56,11 @@ dev = [
     "pytest-xdist",
     "pylint>=2.6.0",
     "pyink",
+]
+
+# Installed through `pip install '.[rasters]'`
+rasters = [
+    "gdal",
 ]
 
 # Installed through `pip install '.[docs]'`.

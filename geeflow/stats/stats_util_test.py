@@ -70,6 +70,63 @@ class StatsUtilTest(parameterized.TestCase):
     self.assertEqual(sa.min, arr.min())
     self.assertEqual(sa.max, arr.max())
 
+  def test_counter_accumulator_nans_excluded_from_stats(self):
+    arr = np.array([1.0, np.nan, 2.0, np.nan, 3.0])
+    sa = stats_util.CounterAccumulator()
+    sa += arr
+    with self.subTest(msg="n_nan"):
+      self.assertEqual(sa.n_nan, 2)
+    with self.subTest(msg="n_masked"):
+      self.assertEqual(sa.n_masked, 0)
+    with self.subTest(msg="n"):
+      self.assertEqual(sa.n, 3)
+    with self.subTest(msg="mean"):
+      self.assertEqual(sa.mean, 2.0)
+    with self.subTest(msg="min"):
+      self.assertEqual(sa.min, 1.0)
+    with self.subTest(msg="max"):
+      self.assertEqual(sa.max, 3.0)
+    with self.subTest(msg="var"):
+      self.assertAlmostEqual(sa.var, 2 / 3)
+    with self.subTest(msg="std"):
+      self.assertAlmostEqual(sa.std, np.sqrt(2 / 3))
+
+  def test_counter_accumulator_all_nans_produces_invalid(self):
+    arr = np.array([np.nan, np.nan])
+    sa = stats_util.CounterAccumulator()
+    sa += arr
+    with self.subTest(msg="n_nan"):
+      self.assertEqual(sa.n_nan, 2)
+    with self.subTest(msg="n_masked"):
+      self.assertEqual(sa.n_masked, 0)
+    with self.subTest(msg="n"):
+      self.assertEqual(sa.n, 0)
+    with self.subTest(msg="is_valid"):
+      self.assertFalse(sa.is_valid())
+
+  def test_counter_accumulator_nans_with_mask_both_counted(self):
+    arr = np.array([1.0, np.nan, 3.0, 4.0, np.nan])
+    mask = np.array([1, 1, 1, 0, 0])
+    sa = stats_util.CounterAccumulator()
+    sa.add(arr, mask)
+    # 2 values masked by explicit mask, 1 NaN in the remaining values.
+    with self.subTest(msg="n_masked"):
+      self.assertEqual(sa.n_masked, 2)
+    with self.subTest(msg="n_nan"):
+      self.assertEqual(sa.n_nan, 1)
+    with self.subTest(msg="n"):
+      self.assertEqual(sa.n, 2)
+    with self.subTest(msg="mean"):
+      self.assertEqual(sa.mean, 2.0)
+    with self.subTest(msg="min"):
+      self.assertEqual(sa.min, 1.0)
+    with self.subTest(msg="max"):
+      self.assertEqual(sa.max, 3.0)
+    with self.subTest(msg="var"):
+      self.assertAlmostEqual(sa.var, 1.0)
+    with self.subTest(msg="std"):
+      self.assertAlmostEqual(sa.std, 1.0)
+
   def test_counter_accumulator_masked_bins(self):
     arr = np.array([2, 5, 4, 5, 99])
     sa = stats_util.CounterAccumulator()

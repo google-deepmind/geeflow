@@ -19,6 +19,7 @@ import datetime
 from absl.testing import absltest
 from absl.testing import parameterized
 from geeflow import times
+import numpy as np
 
 
 class TimesTest(parameterized.TestCase):
@@ -60,6 +61,19 @@ class TimesTest(parameterized.TestCase):
     n = 2
     ranges = times.get_date_ranges(start, n, days=5)
     self.assertEqual(ranges, [("2015-01-01", 0, 5), ("2015-01-06", 0, 5)])
+
+  def test_resolve_date_ranges(self):
+    windows, timestamps = times.resolve_date_ranges([
+        ("2022-01-01", 3, 0),
+        ("2022-04-01", 3, 0),
+    ])
+    self.assertEqual(
+        windows,
+        [("2022-01-01", "2022-04-01"), ("2022-04-01", "2022-07-01")],
+    )
+    self.assertEqual(timestamps.dtype, np.int64)
+    self.assertLen(timestamps, 2)
+    self.assertLess(timestamps[0], timestamps[1])
 
 
 if __name__ == "__main__":

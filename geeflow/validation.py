@@ -48,6 +48,11 @@ SOURCE_CONFIG_KEYS = frozenset({
     "start_date_fn",
     "end_date_fn",
     "filter_date",
+    # Temporal anchoring & seasonality matching.
+    "temporal_anchor",
+    "time_window_days",
+    "match_season",
+    "match_season_window_days",
     # Sampling.
     "algo",
     "sampling_kw",
@@ -58,11 +63,12 @@ SOURCE_CONFIG_KEYS = frozenset({
     "dtype",
     "dummy_image_id",
     "tfds_type",
+    "shape",
     # Request splitting.
     "split_dates_into_separate_requests",
     # CCDC-specific.
     "format_config",
-    # get_image_from_item algo.
+    # im_from_item algo.
     "asset_id_key",
 })
 
@@ -80,9 +86,13 @@ LABEL_CONFIG_KEYS = frozenset({
     "img_width_deg",
     "max_cell_size_m",
     "default_scale",
+    "scalar_batch_size",
+    "scalar_batch_cell_size_deg",
     # Output processing.
     "ignore_for_float_conversion",
     "tfds_id_keys",
+    # Graceful failure handling.
+    "skip_failing_plots",
 })
 
 # The canonical set of top-level config keys.
@@ -106,7 +116,7 @@ def resolve_source_class(module_str: str):
   Supports:
     - "ClassName" -> looks up ClassName in ee_data (backward compatible).
     - "submodule.ClassName" -> imports from geeflow.data_sources.submodule.
-    - "path.submodule.ClassName" -> imports from the given (global imprort) path
+    - "path.submodule.ClassName" -> imports from the given (global import) path
       (for data in custom directories).
 
   Args:
@@ -158,7 +168,7 @@ def validate_sources_config(config: mlc.ConfigDict) -> None:
       else:
         errors.append(
             f"Source '{name}' has no 'algo' set. It must be set to a valid "
-            "sampling algorithm (e.g. 'ic_sample_date_ranges', 'sample_roi')."
+            "sampling algorithm (e.g. 'ic_temporal_composites', 'im_static')."
         )
 
     # Warn about unknown keys (typo catcher) — don't error for flexibility.

@@ -21,6 +21,7 @@ import io
 import os
 import tempfile
 from typing import Any
+import warnings
 
 from absl import logging
 from geeflow import coords
@@ -37,6 +38,19 @@ import ee
 
 EeAssetType = ee.ImageCollection | ee.Image | ee.FeatureCollection
 ConfigDict = mlc.ConfigDict | dict[str, Any]
+
+
+# Maps deprecated sampling algorithm names to their new names.
+_DEPRECATED_ALGO_NAMES: dict[str, str] = {
+    "ic_sample": "ic_stack",
+    "ic_sample_reduced": "ic_reduced",
+    "ic_sample_date_ranges": "ic_temporal_composites",
+    "sample_roi": "im_static",
+    "get_ccdc": "ccdc_coefficients",
+    "fc_get": "fc_properties",
+    "fc_to_image": "fc_rasterize",
+    "get_image_from_item": "im_from_item",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -198,14 +212,15 @@ def pipeline_sources(config: mlc.ConfigDict) -> dict[str, EeAssetType]:
       if out_method not in ["ic", "im", "fc"]:
         sat = sat(**v.get("out_kw", {}))
     if v.get("select"):
-      if v.algo not in ("get_image_from_item", ee_algo.get_image_from_item):
-        # TODO: For this algo, we don't have enfore to specify the
-        # image collection so validate the select choices would raise an error.
-        # Consider enforince the specification of the image collection.
+      if v.algo not in ("im_from_item", "get_image_from_item",
+                        ee_algo.get_image_from_item):
+        # TODO: For this algo, we do not enforce specifying the
+        # image collection, so validating the choices would raise an error.
+        # Consider enforcing the specification of the image collection.
         _validate_select_choices(k, sat, v.select)
         sat = sat.select(v.select)
     if v.get("cast"):
-      sat = sat.cast(*v.cast)
+      sat = sat.cast(*v.cast)  # pyrefly: ignore[missing-attribute]
     if v.get("filter_date", True) and hasattr(sat, "filterDate"):
       if "date_ranges" in v:
         start, end = times.outer_dates(v.date_ranges)
@@ -238,7 +253,7 @@ def _validate_select_choices(source_name: str, source: EeAssetType,
     if not source.toList(1).size().getInfo():
       # Maybe during filtering it got empty.
       raise ValueError(f"FeatureCollection already empty: {source_name}")
-    available_names = set(source.first().propertyNames().getInfo())
+    available_names = set(source.first().propertyNames().getInfo())  # pyrefly: ignore[bad-argument-type]
     available_names.add(ee_algo.FEATURE_EXISTS_INTEGER_KEY)
   elif isinstance(source, ee.ImageCollection):
     available_names = source.first().bandNames().getInfo()
@@ -248,7 +263,7 @@ def _validate_select_choices(source_name: str, source: EeAssetType,
     raise ValueError(f"Unsupported source type: {type(source)}")
   if isinstance(select, str):
     select = [select]
-  if set(select) - set(available_names):
+  if set(select) - set(available_names):  # pyrefly: ignore[bad-argument-type]
     raise ValueError(
         f"Some selected property/band names `{select}` are not "
         f"available in source `{source_name}`: `{available_names}`.\n"
@@ -277,17 +292,26 @@ def get_algo_from_config(
     raise ValueError(f"No valid algo for {source_name}")
   algo_fn = cfg.algo
   if isinstance(algo_fn, str):
+    if algo_fn in _DEPRECATED_ALGO_NAMES:
+      new_name = _DEPRECATED_ALGO_NAMES[algo_fn]
+      warnings.warn(
+          f"Algorithm name '{algo_fn}' is deprecated for source "
+          f"'{source_name}'. Use '{new_name}' instead.",
+          DeprecationWarning,
+          stacklevel=2,
+      )
     algo_fn = getattr(ee_algo, algo_fn)
   return algo_fn
 
 
-def _get_dummy_im(asset: EeAssetType, cfg: ConfigDict) -> ee.Image:
+def _get_dummy_im(asset: EeAssetType, cfg: ConfigDict,
+                  roi: ee.Geometry) -> ee.Image:
   """Returns an empty dummy image for the given asset."""
   dummy_asset = asset
   if "dummy_image_id" in cfg:
-    dummy_asset = dummy_asset.filterMetadata(
+    dummy_asset = dummy_asset.filterMetadata(  # pyrefly: ignore[missing-attribute]
         "system:index", "equals", cfg["dummy_image_id"])
-  dummy_im = ee_algo.get_dummy_image(dummy_asset.first())
+  dummy_im = ee_algo.get_dummy_image(dummy_asset.first())  # pyrefly: ignore[bad-argument-type, missing-argument]
   if ("sampling_kw" in cfg and
       cfg["sampling_kw"].get("reduce_fn", "") == "mean"):
     # Running "mean" reducer will make type float, so we need to convert
@@ -295,7 +319,236 @@ def _get_dummy_im(asset: EeAssetType, cfg: ConfigDict) -> ee.Image:
     dummy_im = dummy_im.toFloat()
   if cfg.get("select_final", None):
     dummy_im = dummy_im.select(cfg["select_final"])
+  # This will avoid "Reprojection output too large (XXXXxXXXX pixels)." error.
+  dummy_im = dummy_im.clip(roi.centroid(0.1))
+  dummy_im = dummy_im.reproject(roi.projection())
   return dummy_im
+
+
+def _handle_get_ccdc(
+    algo: Callable[..., Any],
+    asset: EeAssetType,
+    roi: ee.Geometry,
+    name: str,
+    cfg: ConfigDict,
+    kw: dict[str, Any],
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'get_ccdc' sampling algorithm."""
+  if ("year_selection" in (fmt := cfg.get("format_config", {}))) and (
+      len(fmt["year_selection"]) != fmt["to"] - fmt["from"] + 1
+  ):
+    raise ValueError(
+        "`year_selection` mask should include all years "
+        "between `from` and `to`."
+    )
+  ccdc_im = algo(asset, roi, bands=cfg.get("select"), **kw)
+  rename_fn = functools.partial(
+      lambda b, n: ee.String(n + "_").cat(ee.String(b)), n=name
+  )
+  ccdc_im = ccdc_im.rename(ccdc_im.bandNames().map(rename_fn))
+  return [ccdc_im], {}
+
+
+def _handle_sample_roi(
+    asset: EeAssetType,
+    name: str,
+    mask_value: int,
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'sample_roi' sampling algorithm."""
+  return [_add_mask_and_rename(asset, name, "", mask_value)], {}  # pyrefly: ignore[bad-argument-type]
+
+
+def resolve_date_range(
+    cfg: ConfigDict, item: dict[str, Any]
+) -> tuple[str, str] | None:
+  """Resolves `(start_date, end_date)` for an item from `cfg`."""
+  value = cfg.get("date_range") or cfg.get("sampling_kw", {}).get("date_range")
+  if fn := cfg.get("date_range_fn"):
+    if value:
+      raise ValueError("Both date_range & date_range_fn are set.")
+    value = fn(item)
+  return tuple(value) if value is not None else None
+
+
+def resolve_date_ranges(
+    cfg: ConfigDict, item: dict[str, Any]
+) -> tuple[tuple[Any, ...], ...] | None:
+  """Resolves `date_ranges` sequence for an item from `cfg`."""
+  value = cfg.get("date_ranges") or cfg.get("sampling_kw", {}).get(
+      "date_ranges"
+  )
+  if fn := cfg.get("date_ranges_fn"):
+    if value:
+      raise ValueError("Both date_ranges & date_ranges_fn are set.")
+    value = fn(item)
+  return tuple(tuple(e) for e in value) if value is not None else None
+
+
+def _handle_ic_sample(
+    algo: Callable[..., Any],
+    algo_name: str,
+    asset: EeAssetType,
+    roi: ee.Geometry,
+    name: str,
+    cfg: ConfigDict,
+    scale: float,
+    mask_value: int,
+    item: dict[str, Any],
+    kw: dict[str, Any],
+    processed_ee_sources: dict[str, list[ee.Image]],
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'ic_stack' and 'ic_temporal_composites' algorithms."""
+  if temporal_anchor := cfg.get("temporal_anchor") or kw.get("temporal_anchor"):
+    if temporal_anchor not in processed_ee_sources:
+      raise ValueError(
+          f"Temporal anchor {temporal_anchor} not in "
+          f"{processed_ee_sources.keys()}"
+      )
+    anchor_im = processed_ee_sources[temporal_anchor]
+    if isinstance(anchor_im, list):
+      anchor_im = anchor_im[0] if anchor_im else None
+    if anchor_im is not None:
+      kw["temporal_anchor_ts"] = ee.Image(anchor_im).get(
+          "system:time_start"
+      )
+    kw["time_window_days"] = cfg.get(
+        "time_window_days", kw.get("time_window_days")
+    )
+
+  # TODO: Cleanup the code so that we only have one `limit` setting.
+  kw["limit"] = cfg.get("limit", kw.get("limit"))
+
+  if algo_name in ("ic_sample", "ic_stack"):
+    if (dr := resolve_date_range(cfg, item)) is not None:
+      kw["date_range"] = dr
+  elif (drs := resolve_date_ranges(cfg, item)) is not None:
+    # Usage example for `ic_sample_date_ranges`:
+    # c.l7_v2.date_ranges_fn = functools.partial(
+    #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
+    kw["date_ranges"] = drs
+
+  if cfg.get("select_final"):
+    kw["bands"] = cfg.get("select_final")
+  if algo_name in ("ic_sample_date_ranges", "ic_temporal_composites"):
+    kw["dummy_im"] = _get_dummy_im(asset, cfg, roi)
+    kw["scale"] = scale
+
+  if cfg.get("match_season"):
+    kw["match_season_date"] = item.get("timestamp")
+    kw["match_season_window_days"] = cfg.get(
+        "match_season_window_days", kw.get("match_season_window_days", 45)
+    )
+
+  ims, ims_metadata = algo(roi, asset, **kw)
+  metadata_updates = {f"{name}_{k}": v for k, v in ims_metadata.items()}
+  # "#{t}" is used to concatenate along the time dimension.
+  asset_ims = [
+      _add_mask_and_rename(im, name, f"#{t}", mask_value)
+      for t, im in enumerate(ims)
+  ]
+  return asset_ims, metadata_updates
+
+
+def _handle_ic_sample_reduced(
+    algo: Callable[..., Any],
+    asset: EeAssetType,
+    roi: ee.Geometry,
+    name: str,
+    cfg: ConfigDict,
+    scale: float,
+    mask_value: int,
+    item: dict[str, Any],
+    kw: dict[str, Any],
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'ic_sample_reduced' sampling algorithm."""
+  if (dr := resolve_date_range(cfg, item)) is not None:
+    # Usage example for `ic_sample_date_ranges`:
+    # c.l7_v2.date_range_fn = functools.partial(
+    #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
+    kw["date_range"] = dr
+
+  dummy_im = _get_dummy_im(asset, cfg, roi)
+  im = algo(roi, asset, dummy_im=dummy_im, scale=scale, **kw)
+  return [_add_mask_and_rename(im, name, "", mask_value)], {}
+
+
+def _handle_fc_get(
+    algo: Callable[..., Any],
+    asset: EeAssetType,
+    roi: ee.Geometry,
+    name: str,
+    cfg: ConfigDict,
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'fc_get' sampling algorithm."""
+  metadata_updates = {
+      f"{name}_{p}": v for p, v in algo(asset, roi, cfg["select"]).items()
+  }
+  return [], metadata_updates
+
+
+def _handle_fc_to_image(
+    algo: Callable[..., Any],
+    asset: EeAssetType,
+    roi: ee.Geometry,
+    name: str,
+    cfg: ConfigDict,
+    mask_value: int,
+    kw: dict[str, Any],
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'fc_to_image' sampling algorithm."""
+  props = (cfg.get("select")
+           if cfg.get("select_final") is None else cfg.get("select_final"))
+  im = algo(asset, roi, props=props, **kw)
+  return [_add_mask_and_rename(im, name, "", mask_value)], {}
+
+
+def _handle_get_image_from_item(
+    name: str,
+    cfg: ConfigDict,
+    mask_value: int,
+    item: dict[str, Any],
+    kw: dict[str, Any] | None = None,
+    **unused_kwargs,
+) -> tuple[list[ee.Image], dict[str, Any]]:
+  """Handles the 'get_image_from_item' sampling algorithm."""
+  select = cfg.get("select", None)
+  cloud_mask_fn = (kw or {}).get("cloud_mask_fn", None)
+  full_im = ee.Image(item[cfg["asset_id_key"]])
+  if cloud_mask_fn:
+    full_im = full_im.updateMask(cloud_mask_fn(full_im))
+  im = full_im.select(select) if select else full_im
+  return [_add_mask_and_rename(im, name, "", mask_value)], {}
+
+
+_ALGO_HANDLERS: dict[
+    str,
+    Callable[..., tuple[list[ee.Image], dict[str, Any]]],
+] = {
+    # Canonical names.
+    "ic_stack": _handle_ic_sample,
+    "ic_reduced": _handle_ic_sample_reduced,
+    "ic_temporal_composites": _handle_ic_sample,
+    "im_from_item": _handle_get_image_from_item,
+    "im_static": _handle_sample_roi,
+    "fc_properties": _handle_fc_get,
+    "fc_rasterize": _handle_fc_to_image,
+    "ccdc_coefficients": _handle_get_ccdc,
+    # Deprecated aliases (kept for backwards compatibility).
+    "get_ccdc": _handle_get_ccdc,
+    "sample_roi": _handle_sample_roi,
+    "ic_sample": _handle_ic_sample,
+    "ic_sample_date_ranges": _handle_ic_sample,
+    "ic_sample_reduced": _handle_ic_sample_reduced,
+    "fc_get": _handle_fc_get,
+    "fc_to_image": _handle_fc_to_image,
+    "get_image_from_item": _handle_get_image_from_item,
+}
 
 
 def get_requests_fn(
@@ -314,6 +567,7 @@ def get_requests_fn(
       metadata["lon"] = default_roi.centroid(0.1).coordinates().get(0)
       metadata["lat"] = default_roi.centroid(0.1).coordinates().get(1)
 
+    processed_ee_sources = {}
     for name, asset in sources.items():
       cfg = config.sources.get(name)
       scale = cfg.get("scale") or config.labels.default_scale
@@ -345,80 +599,36 @@ def get_requests_fn(
           asset = asset.filterDate(start, end)
 
       algo = get_algo_from_config(config, name)
-      algo_name = algo.__name__  # pytype: disable=attribute-error
+      algo_str = cfg.algo if isinstance(cfg.algo, str) else algo.__name__
+      algo_name = _DEPRECATED_ALGO_NAMES.get(algo_str, algo_str)
       split_dates_into_separate_requests = cfg.get(
           "split_dates_into_separate_requests", False)
-      asset_ims = []
-      if algo_name == "get_ccdc":
-        if (("year_selection" in (fmt := cfg.get("format_config", {}))) and
-            (len(fmt["year_selection"]) != fmt["to"] - fmt["from"] + 1)):
-          raise ValueError("`year_selection` mask should include all years "
-                           "between `from` and `to`.")
-        ccdc_im = algo(asset, roi, bands=cfg.get("select"), **kw)
-        rename_fn = functools.partial(
-            lambda b, n: ee.String(n + "_").cat(ee.String(b)), n=name
-        )
-        ccdc_im = ccdc_im.rename(ccdc_im.bandNames().map(rename_fn))
-        asset_ims.append(ccdc_im)
-      elif algo_name == "sample_roi":
-        asset_ims.append(_add_mask_and_rename(asset, name, "", mask_value))
-      elif algo_name in ["ic_sample", "ic_sample_date_ranges"]:
-        # TODO: Cleanup the code so that we only have one 'limit'
-        # setting.
-        kw["limit"] = cfg.get("limit", kw.get("limit"))
-        kw_name = "date_range" if algo_name == "ic_sample" else "date_ranges"
-        value = cfg.get(kw_name)
-        if fn := cfg.get(f"{kw_name}_fn"):
-          if value:
-            raise ValueError(f"Both {kw_name} and {kw_name}_fn are set.")
-          # Usage example for `ic_sample_date_ranges`:
-          # c.l7_v2.date_ranges_fn = functools.partial(
-          #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
-          value = fn(item)
-        kw[kw_name] = value
 
-        if cfg.get("select_final"):
-          kw["bands"] = cfg.get("select_final")
-        if algo_name == "ic_sample_date_ranges":
-          kw["dummy_im"] = _get_dummy_im(asset, cfg)
-          kw["scale"] = scale
-
-        ims, ims_metadata = algo(roi, asset, **kw)
-        metadata |= {f"{name}_{k}": v for k, v in ims_metadata.items()}
-        # "#{t}" is used to concatenate along the time dimension.
-        asset_ims += [
-            _add_mask_and_rename(im, name, f"#{t}", mask_value)
-            for t, im in enumerate(ims)
-        ]
-      elif algo_name == "ic_sample_reduced":
-        if fn := cfg.get("date_range_fn"):
-          # Usage example for `ic_sample_date_ranges`:
-          # c.l7_v2.date_range_fn = functools.partial(
-          #   times.get_date_ranges_from_year, year_key="year", n=4, months=3)
-          kw["date_range"] = fn(item)
-
-        dummy_im = _get_dummy_im(asset, cfg)
-        im = algo(roi, asset, dummy_im=dummy_im, scale=scale, **kw)
-        asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
-      elif algo_name == "fc_get":
-        metadata |= {f"{name}_{p}": v for p, v in
-                     algo(asset, roi, cfg["select"]).items()}
-      elif algo_name == "fc_to_image":
-        im = algo(asset, roi, props=cfg.get("select"), **kw)
-        asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
-      elif algo_name == "get_image_from_item":
-        select = cfg.get("select", None)
-        im = ee_algo.get_image_from_item(item, cfg["asset_id_key"], select)
-        asset_ims.append(_add_mask_and_rename(im, name, "", mask_value))
-      else:
+      if (handler := _ALGO_HANDLERS.get(algo_name)) is None:
         raise ValueError(f"Unsupported algo: {algo_name}")
+
+      asset_ims, metadata_updates = handler(
+          algo=algo,
+          algo_name=algo_name,
+          asset=asset,
+          roi=roi,
+          name=name,
+          cfg=cfg,
+          scale=scale,
+          mask_value=mask_value,
+          item=item,
+          kw=kw,
+          processed_ee_sources=processed_ee_sources,
+      )
+      processed_ee_sources[name] = asset_ims
+      metadata |= metadata_updates
 
       if asset_ims:
         if split_dates_into_separate_requests:
           for im in asset_ims:
             requests.append(Request(im, roi, scale, name, cfg.get("crs")))
         else:
-          # b/393557949 - This currently combines timesteps for the same asset
+          # Note: This currently combines timesteps for the same asset
           # in a single ee.data.computePixels call. See ee_export_utils.py for
           # more details on how this could be better optimized.
           asset_im = functools.reduce(
@@ -428,7 +638,7 @@ def get_requests_fn(
           # without a fixed number of timesteps, the names of the bands changes
           # to include the timestep index, meaning that the names of the bands
           # are not fixed for each request.
-          fixed_bands = algo != ee_algo.ic_sample
+          fixed_bands = algo_name != "ic_stack"
           requests.append(
               Request(asset_im, roi, scale, name, cfg.get("crs"), fixed_bands)
           )

@@ -1,26 +1,23 @@
+<!--* freshness: { owner: 'maximneumann' reviewed: '2026-06-09' } *-->
+
 # Welcome to GeeFlow
 
 <div style="text-align: left">
-<img align="right" src="https://raw.githubusercontent.com/google-deepmind/geeflow/refs/heads/main/docs/images/geeflow_logo_1.png" width="100">
+<img align="right" src="images/geeflow_logo_3.png" height="60">
 </div>
 
 <div style="
-  background-color: transparent;
-  padding: 5px;
+  background-color: #283593;
+  padding: 12px 20px;
   text-align: center;
-  color:rgb(66, 66, 66);
+  color: white;
   font-weight: bold;
-  font-size: 1.5em;
-  font-style: italic;
-  margin-left: auto;
-  margin-right: auto;
-  width: fit-content;
+  font-size: 1.2em;
+  border-radius: 8px;
+  margin-bottom: 16px;
 ">
-  Python library for generating large scale geospatial datasets using Google
-  Earth Engine.
+  Large-scale geospatial dataset generation using Google Earth Engine.
 </div>
-
-<br>
 
 <div class="mdx-hero__content">
   <a href="https://github.com/google-deepmind/geeflow" class="md-button">
@@ -42,13 +39,33 @@ conform to the TensorFlow Datasets (TFDS) format, which lets you use them
 directly with TFDS `tf.data.Dataset` data pipelines, streamlining integration
 into common machine learning workflows.
 
-The GeeFlow project is open-sourced to facilitate and accelerate research in
-global-scale geospatial data preparation for AI applications. The goal is to
-simplify the data preparation phase for machine learning experiments and
-abstract workflows associated with Google Earth Engine for large-scale data
-extraction and processing.
-
 To access GeeFlow, visit [the GitHub repository](https://github.com/google-deepmind/geeflow).
+
+## Where to Start
+
+| Your Goal                     | Go To                                        |
+| ----------------------------- | -------------------------------------------- |
+| **🛰️ New to GeeFlow?**        | [Starter Tutorial](starter.md)               |
+: End-to-end tutorial           :                                              :
+| **⚙️ Understand configs** and | [Config Reference](configs.md)               |
+: how to write them             :                                              :
+| **📍 Sample locations or rare  | [Spatial Sampling](spatial_sampling.md)      |
+: targets**                     :                                              :
+| **🧪 Configure source          | [Source Processing](source_processing.md)    |
+: processing** for your data    :                                              :
+: source                        :                                              :
+| **📡 Find a data source**      | [Data Sources](sources.md)                   |
+: (satellite, DEM, climate,     :                                              :
+: etc.)                         :                                              :
+| **📦 Run data exports**        | [Export Pipelines](exports.md)               |
+: (patches, granules, model     :                                              :
+: results)                      :                                              :
+| **🚀 Run distributed           | [Distributed Inference](inference.md)        |
+: inference** via XManager      :                                              :
+| **🏗️ Understand the           | [Architecture](architecture.md)              |
+: internals** of the pipeline   :                                              :
+| **🌍 Train a model** on        | [Jeo — Geospatial                            |
+: GeeFlow data                  : ML](https\://github.com/google-deepmind/jeo) :
 
 ## Key features
 
@@ -203,6 +220,25 @@ The generated data in this example has different spatial, temporal, and spectral
 dimensions. The temporal samples from Sentinel-2 and Sentinel-1 cover different
 time ranges. This example emphasizes the flexibility of the specifications.
 
+### Documentation
+
+Detailed guides and references for working with GeeFlow:
+
+-   **[🚀 Getting Started](starter.md)** — Step-by-step tutorial for newcomers:
+    prerequisites, first config, local testing, full export, and dataset
+    inspection.
+-   **[📖 Config Reference](configs.md)** — Complete reference for all
+    configuration fields: labels, sources, algorithms, and common patterns.
+-   **[📍 Spatial Sampling](spatial_sampling.md)** — Guide to spatial and
+    stratified sampling: rare targets, mask conditioning, and deduplication.
+-   **[🧪 Source Processing](source_processing.md)** — Guide to choosing and
+    configuring source processing algorithms: decision tree, temporal reduction,
+    cloud masking, and advanced patterns.
+-   **[🏗️ Architecture](architecture.md)** — How GeeFlow works under the hood:
+    module dependencies, pipeline stages, retry logic, and design decisions.
+-   **[📡 Data Sources](sources.md)** — Catalog of all 50+ available data
+    sources: satellites, elevation, climate, LiDAR, and custom assets.
+
 ### Out of scope
 
 Specific capabilities are considered out of scope from the GeeFlow library but
@@ -221,16 +257,3 @@ complement the focus on geospatial AI research:
     -  [Hugging Face](https://huggingface.co/datasets)
     -  [TFDS Catalog](https://www.tensorflow.org/datasets/catalog)
     -  [TorchGeo Datasets](https://torchgeo.readthedocs.io/en/stable/api/datasets.html#geospatial-datasets)
-
-## Cite GeeFlow
-
-Cite the GeeFlow codebase as follows:
-
-```sh
-@software{geeflow2025:github,
-  author = {Maxim Neumann and Anton Raichuk and Michelangelo Conserva and Keith Anderson},
-  title = {{GeeFlow}: Large scale datasets generation and processing for geospatial {AI} research}.
-  url = {https://github.com/google-deepmind/geeflow},
-  year = {2025}
-}
-```

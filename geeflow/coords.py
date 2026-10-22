@@ -35,7 +35,7 @@ UtmCoord = tuple[float, float, int, str]
 
 
 def get_lat_lon_roi(lat, lon, width_m=None, width_deg=None):
-  width_deg = width_deg or width_m / DEG_AT_EQUATOR_IN_M
+  width_deg = width_deg or width_m / DEG_AT_EQUATOR_IN_M  # pyrefly: ignore[unsupported-operation]
   delta = width_deg / 2
   roi = ee.Geometry.Rectangle([lon - delta, lat - delta,
                                lon + delta, lat + delta])
@@ -113,7 +113,7 @@ class UtmGridMapping:
 
   @property
   def crs(self) -> tuple[float, float, float, float, float, float]:
-    return (
+    return (  # pyrefly: ignore[bad-return]
         self.cell_size,  # x scale.
         0.0,  # x shear.
         self.utm_x_min,  # x translation.
@@ -124,7 +124,7 @@ class UtmGridMapping:
 
   @property
   def centroid(self) -> tuple[float, float]:
-    return (
+    return (  # pyrefly: ignore[bad-return]
         self.utm_x_min + (self.width * self.cell_size) / 2.0,
         self.utm_y_min + (self.height * self.cell_size) / 2.0,
     )  # (x, y)
@@ -139,7 +139,7 @@ class UtmGridMapping:
 
   @property
   def bbox(self) -> tuple[float, float, float, float]:
-    return (
+    return (  # pyrefly: ignore[bad-return]
         self.utm_x_min,
         self.utm_y_min,
         self.utm_x_min + (self.width * self.cell_size),
@@ -188,8 +188,8 @@ class UtmGridMapping:
         int(self.height * self.cell_size / cell_size),
         # Round x/y min to closest new cell size (to keep pixels fixed for given
         # grid size).
-        utm_x_min=round(self.utm_x_min / cell_size) * cell_size,
-        utm_y_min=round(self.utm_y_min / cell_size) * cell_size)
+        utm_x_min=round(self.utm_x_min / cell_size) * cell_size,  # pyrefly: ignore[bad-argument-type]
+        utm_y_min=round(self.utm_y_min / cell_size) * cell_size)  # pyrefly: ignore[bad-argument-type]
 
   def to_ee_point(self, utm: bool = False) -> ee.geometry.Geometry:
     if utm:
@@ -210,7 +210,7 @@ class UtmGridMapping:
   def to_ee_bbox(self) -> ee.Geometry:
     # EE BBox is only possible in LatLon.
     south, west, north, east = self.bbox_latlon
-    return ee.Geometry.BBox(west, south, east, north)
+    return ee.Geometry.BBox(west, south, east, north)  # pyrefly: ignore[bad-argument-type]
 
   def to_shapely_polygon(self) -> shapely.geometry.Polygon:
     # Only LatLon for now.

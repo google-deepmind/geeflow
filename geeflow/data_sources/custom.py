@@ -29,8 +29,7 @@ class CustomFC(ee_base.EeDataFC):
 
   An example:
     c.gedi = copy.deepcopy(all_sources.CustomFC)
-    c.gedi.kw.asset_name =
-        "projects/computing-engine-190414/assets/gedi_nico_all_predictions"
+    c.gedi.kw.asset_name = "projects/my-project/assets/gedi_predictions"
     c.gedi.select = ["canopy_height"]
     c.gedi.scale = 10
     c.gedi.algo = ee_algo.fc_to_image
@@ -44,23 +43,23 @@ class CustomFC(ee_base.EeDataFC):
     set_property: A tuple of (property_name, property_value) to set on the
       features.
   """
-  asset_name: Sequence[str] | str = ""  # Needs to be specified.
+
+  asset_name: Sequence[str] | str = ""  # Needs to be specified.  # pyrefly: ignore[bad-override]
   filters: Sequence[tuple[str, Any]] | None = None
   buffer_points: int = 0
   buffer: int = 0
-  # NOTE: Currently ".bounds" methiod is very slow and could incurr very
-  # significant slowdown. For more context, see:
-  # (internal link)
-  # Only use on small collections.
+  # NOTE: Currently ".bounds" method is very slow and could incur very
+  # significant slowdown. Only use on small collections.
   use_bounds: bool = False
   set_property: tuple[str, Any] | None = None
 
   @property
   def fc(self):
     if isinstance(self.asset_name, (tuple, list)):
-      fc = ee.FeatureCollection(
-          [ee.FeatureCollection(x) if isinstance(x, str) else CustomFC(**x).fc
-           for x in self.asset_name])
+      fc = ee.FeatureCollection([
+          ee.FeatureCollection(x) if isinstance(x, str) else CustomFC(**x).fc
+          for x in self.asset_name
+      ])
       fc = fc.flatten()
     else:
       fc = ee.FeatureCollection(self.asset_name)
@@ -109,16 +108,21 @@ class CustomImage(ee_base.EeData):
 
   An example:
     c.primary_forest = copy.deepcopy(all_sources.CustomImage)
-    c.primary_forest.kw.asset_name =
-        "projects/computing-engine-190414/assets/arbaro/suso/primary_forests"
+    c.primary_forest.kw.asset_name = (
+        "projects/my-project/assets/primary_forests"
+    )
   """
+
   asset_name: str = ""  # Needs to be specified.
+  to_bands: bool = False
   im_fn: Callable[[str], ee.Image] | None = None
 
   @property
   def im(self):
     if self.im_fn:
       return self.im_fn(self.asset_name)
+    if self.to_bands:
+      return ee.ImageCollection(self.asset_name).toBands()
     return ee.Image(self.asset_name)
 
   @property
@@ -132,14 +136,14 @@ class CustomIC(ee_base.EeData):
 
   An example:
     c.google = copy.deepcopy(all_sources.CustomImage)
-    c.google.kw.asset_name =
-        "projects/satellite-segmentation/assets/labels"
+    c.google.kw.asset_name = "projects/my-project/assets/labels"
   """
+
   # asset_name could refer to:
   #  - str: a single ImageCollection (merge should be False)
   #  - list/tuple: list of Image assets (merge should be False)
   #  - list/tuple: list of ImageCollection assets (merge should be True)
-  asset_name: str | list[str] = ""  # Needs to be specified.
+  asset_name: str | list[str] = ""  # Needs to be specified.  # pyrefly: ignore[bad-override]
   merge: bool = False
   ic_fn: Callable[[str | list[str]], ee.ImageCollection] | None = None
 

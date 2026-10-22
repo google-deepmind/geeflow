@@ -12,15 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""EarthEngine algorithms for data pipelines."""
+"""EarthEngine sampling and processing algorithms for GeeFlow pipelines.
+
+This module contains the core algorithms that define how EE data sources are
+sampled, reduced, and transformed into images for export. Each algorithm
+follows the naming convention ``{source_type}_{algorithm}``, where
+``source_type`` indicates the expected EE input type:
+
+- ``ic_*``: Expects an ``ee.ImageCollection`` input.
+- ``im_*``: Expects an ``ee.Image`` input.
+- ``fc_*``: Expects an ``ee.FeatureCollection`` input.
+- ``ccdc_*``: Expects a CCDC customized ImageCollection input.
+
+Canonical algorithm names (new):
+
+- ``ic_stack``: Stack individual IC images across time (multi-temporal).
+- ``ic_reduced``: Reduce an IC to a single composite image.
+- ``ic_temporal_composites``: Create one composite per date range window.
+- ``im_static``: Use a static image (e.g. DEM) clipped to the ROI.
+- ``im_from_item``: Load a specific image by asset ID from metadata.
+- ``fc_properties``: Extract FeatureCollection properties as metadata.
+- ``fc_rasterize``: Rasterize a FeatureCollection to an image.
+- ``ccdc_coefficients``: Extract CCDC change detection coefficients.
+
+The old names (``ic_sample``, ``ic_sample_reduced``, ``ic_sample_date_ragnges``,
+``sample_roi``, ``get_image_from_item``, ``fc_get``, ``fc_to_image``,
+``get_ccdc``) are kept as aliases for backwards compatibility but are
+deprecated.
+"""
 
 import collections
 from collections.abc import Callable, Sequence
 import datetime
 from typing import Any
 
-from dateutil import relativedelta
 from geeflow import ccdc_utils
+from geeflow import times
 import ml_collections
 import numpy as np
 
@@ -42,14 +69,23 @@ def sample_roi(*_, **__):  # pylint: disable=unused-argument
 def get_image_from_item(
     item: dict[str, Any], asset_id_key: str, select: Sequence[str]
 ) -> ee.Image:
-  """Returns an image from an item."""
+  """Returns an ee.Image based on the specified asset ID in the config file.
+
+  This sampling algorithm gets an ee.Image using the key specified to retrieve
+  the Earth Engine asset ID from the config/item metadata.
+
+  Args:
+    item: The config item dictionary.
+    asset_id_key: Key under which the asset ID is stored in item.
+    select: Optional sequence of bands to select.
+  """
   im = ee.Image(item[asset_id_key])
   if select:
     return im.select(select)
   return im
 
 
-def _preprocess_ic(
+def preprocess_ic(
     roi: ee.Geometry,
     ic: ee.ImageCollection,
     cloud_mask_fn: Callable[[ee.Image], ee.Image] | None = None,
@@ -61,8 +97,44 @@ def _preprocess_ic(
     dummy_im: ee.Image | None = None,
     date_range: tuple[str, str] | None = None,
     limit: int | None = None,
+    match_season_date: str | int | float | None = None,
+    match_season_window_days: int = 45,
+    temporal_anchor_ts: int | None = None,
+    time_window_days: int | None = None,
 ) -> ee.ImageCollection:
-  """Preprocesses the image collection."""
+  """Preprocesses the image collection.
+
+  Args:
+    roi: The region of interest.
+    ic: The input ImageCollection.
+    cloud_mask_fn: An optional function to apply a cloud mask to each image.
+    sort_by: The property to sort the ImageCollection by.
+    ascending: Whether to sort in ascending order.
+    bands: A list of band names to select.
+    filter_bounds: Whether to filter the ImageCollection by the bounds of the
+      ROI.
+    roi_filter_fn: An optional function to filter the ImageCollection based on
+      the ROI.
+    dummy_im: An optional dummy image to use if the ImageCollection is empty
+      after filtering.
+    date_range: A tuple of (start_date, end_date) in 'YYYY-MM-DD' format to
+      filter the ImageCollection.
+    limit: The maximum number of images to keep in the ImageCollection.
+    match_season_date: A date string, timestamp, or ee.Date to filter images
+      based on their day of year (DOY). Images are kept if their DOY is within
+      `match_season_window_days` of the `match_season_date`'s DOY.
+    match_season_window_days: The number of days around `match_season_date`'s
+      DOY to include in the filter. Defaults to 45.
+    temporal_anchor_ts: A timestamp in milliseconds. Used with
+      `time_window_days` to filter images within a temporal window.
+    time_window_days: The number of days before and after `temporal_anchor_ts`
+      to include in the filter. Images are kept if their timestamp is within
+      [`temporal_anchor_ts` - `time_window_days`, `temporal_anchor_ts` +
+      `time_window_days`].
+
+  Returns:
+    The preprocessed ImageCollection.
+  """
   if filter_bounds:
     ic = ic.filterBounds(roi)  # Can lead to error if all images filtered out.
     # For NICFI (& other fixed-sized ICs), consider to set filter_bounds=False.
@@ -76,6 +148,48 @@ def _preprocess_ic(
     ic = ic.select(bands)
   if date_range:
     ic = ic.filterDate(*date_range)
+  if temporal_anchor_ts is not None:
+    if time_window_days is None:
+      raise ValueError(
+          "time_window_days must be set if temporal_anchor_ts is set."
+      )
+    time_window = datetime.timedelta(days=time_window_days)
+    time_window_ms = time_window.total_seconds() * 1000
+    ic = ic.filter(
+        ee.Filter.gte(
+            "system:time_start",
+            ee.Number(temporal_anchor_ts).subtract(time_window_ms),
+        )
+    )
+    ic = ic.filter(
+        ee.Filter.lte(
+            "system:time_start",
+            ee.Number(temporal_anchor_ts).add(time_window_ms),
+        )
+    )
+  if match_season_date:
+    anchor_date = ee.Date(match_season_date)
+    # ee.Date.getRelative returns 0-indexed day of year (0-364).
+    # We add 1 to convert it to the standard 1-indexed DOY (1-365).
+    anchor_doy = anchor_date.getRelative("day", "year").add(1)
+
+    def compute_season_distance(image):
+      """Computes a season distance property and adds it to the image."""
+      # Use standard 1-indexed DOY.
+      image_doy = (
+          ee.Date(image.get("system:time_start"))
+          .getRelative("day", "year")
+          .add(1)
+      )
+      diff = anchor_doy.subtract(image_doy).abs()
+      doy_distance = ee.Number(
+          ee.Algorithms.If(diff.gt(182), ee.Number(365).subtract(diff), diff)
+      )
+      return image.set("season_distance", doy_distance)
+
+    ic = ic.map(compute_season_distance).filter(
+        ee.Filter.lte("season_distance", match_season_window_days)
+    )
   if limit:
     ic = ic.limit(limit)
   if dummy_im:
@@ -109,13 +223,13 @@ def fetch_image_collection_properties(
 
   def remap_features(f: ee.Feature):
     # Drop the geometry and any features we don't want.
-    f = ee.Feature(None, {}).copyProperties(f, properties)
+    f = ee.Feature(None, {}).copyProperties(f, properties)  # pyrefly: ignore[bad-assignment]
     for property_name in properties:
       if property_name.startswith(_SYSTEM_PREFIX):
         remapped_name = _SYSTEM_PREFIX_SUBSTITUTE + property_name.removeprefix(
             _SYSTEM_PREFIX
         )
-        f = f.set(remapped_name, f.get(property_name))
+        f = f.set(remapped_name, f.get(property_name))  # pyrefly: ignore[bad-assignment]
     return f
 
   feature_col = ee.FeatureCollection(collection).map(remap_features)
@@ -149,8 +263,7 @@ def fc_get(
     fc: ee.FeatureCollection, roi: ee.Geometry, properties: Sequence[str]
 ) -> dict[str, Any | set[Any]]:
   fc = fc.filterBounds(roi)
-  fc_properties = fetch_image_collection_properties(fc, properties)
-  return fc_properties[0]
+  return fetch_image_collection_properties(fc, properties)[0]
   # What if there are multiple properties? For example, a plot that belong to
   # multiple countries. Could we group them as a set?
   # return {k: set(dic[k] for dic in fc_properties) for k in fc_properties[0]}
@@ -162,12 +275,14 @@ def fc_to_image(
     props: list[str],
     class_names: dict[str, list[str]] | None = None,
     reducer: str = "max",
+    reduce_resolution_reducer: str | None = None,
     drop_missing_classes: bool = True,
     missing_class_value: int = -1,
     unmask_value: int | None = None,
     dtype: str | None = None,
+    temporal_split: tuple[str, list[Any]] | None = None,
 ) -> ee.Image:
-  """Returns FC data.
+  """Rasterizes a FeatureCollection to an image.
 
   Args:
     fc: FeatureCollection.
@@ -177,16 +292,28 @@ def fc_to_image(
       to be mapped to ints. If only a single list is given, it is matched to
       props[0] property.
     reducer: Name of the ee.reducer.
+    reduce_resolution_reducer: Name of a reducer to use for resuceResolution op.
     drop_missing_classes: Features are dropped if it's value for given property
       is not in class_names (be careful with multiple props).
     missing_class_value: Value to use for missing classes if
       `drop_missing_classes` is False.
     unmask_value: If provided, will unmask the image with this value.
     dtype: If provided, will cast the image to this dtype.
+    temporal_split: If provided (a tuple of (property_name, list_of_values)),
+      will split the FC based on the property values and create a time series
+      folded into channels.
 
   Returns:
     An np.ndarray with dimensions (N, H, W, C) or (H, W, C) and its mask.
   """
+  # If dtype is not provided, but FEATURE_EXISTS_INTEGER_KEY is in props, cast
+  # the image to byte as it's a binary output.
+  if (
+      dtype is None
+      and FEATURE_EXISTS_INTEGER_KEY in props
+      and len(props) == 1
+  ):
+    dtype = "uint8"
 
   def to_scalar(feature, props, dic):
     return feature.set(
@@ -207,20 +334,33 @@ def fc_to_image(
       if drop_missing_classes:
         fc = fc.filter(ee.Filter.inList(key, ee.List(list(classes))))
       fc = fc.map(lambda f: to_scalar(feature=f, props=key, dic=dic))  # pylint: disable=cell-var-from-loop
-  im = fc.reduceToImage(
-      properties=props, reducer=get_fc_reduce_fn(reducer).forEach(props)
-  )
+  if temporal_split is not None:
+    new_props = []
+    im = None
+    for val in temporal_split[1]:
+      tmp_im = fc.filter(ee.Filter.eq(temporal_split[0], val)).reduceToImage(
+          properties=props, reducer=get_fc_reduce_fn(reducer).forEach(props)
+      )
+      tmp_props = [f"{p}_{val}" for p in props]
+      new_props.extend(tmp_props)
+      tmp_im = tmp_im.rename(tmp_props)
+      if im is None:
+        im = tmp_im
+      else:
+        im = im.addBands(tmp_im)
+    assert im is not None
+    props = new_props
+  else:
+    im = fc.reduceToImage(
+        properties=props, reducer=get_fc_reduce_fn(reducer).forEach(props)
+    )
   if unmask_value is not None:
     im = im.unmask(unmask_value, False)
 
-  # If dtype is not provided, but FEATURE_EXISTS_INTEGER_KEY is in props, cast
-  # the image to byte as it's a binary output.
-  if (
-      dtype is None
-      and FEATURE_EXISTS_INTEGER_KEY in props
-      and len(props) == 1
-  ):
-    dtype = "uint8"
+  if reduce_resolution_reducer:
+    im = im.reproject(roi.projection())
+    im = im.reduceResolution(
+        reducer=get_fc_reduce_fn(reduce_resolution_reducer), maxPixels=1024)
 
   if dtype == "uint8":
     im = im.toByte()
@@ -238,7 +378,7 @@ def get_ccdc(
     bands: list[str],
     num_segments: int,
 ) -> ee.Image:
-  """Returns CCDC data.
+  """Extracts CCDC change detection coefficients.
 
   Args:
     ic: CCDC's ImageCollection.
@@ -285,8 +425,21 @@ def get_fc_reduce_fn(name: str = "first") -> ee.Reducer:
     return ee.Reducer.mode()
   elif name == "max":
     return ee.Reducer.max()
+  elif name == "mean":
+    return ee.Reducer.mean()
+  elif name == "sum":
+    return ee.Reducer.sum()
   else:
     raise ValueError(f"Reducer `{name}` not supported yet.")
+
+
+def get_ic_sample_reducer(name: str = "mosaic", **kwargs) -> ee.Reducer:
+  """Returns an `ee.Reducer` for reducing sampled ImageCollection features."""
+  if name == "mosaic":
+    name = "lastNonNull"
+  elif name == "percentile":
+    kwargs.setdefault("percentiles", [10, 25, 50, 75, 90])
+  return getattr(ee.Reducer, name)(**kwargs)
 
 
 def get_ic_reduce_fn(
@@ -333,6 +486,8 @@ def get_ic_reduce_fn(
     assert roi is not None
 
     def rr(im):
+      if "clip_max_value_before_reduce" in kwargs:
+        im = im.min(kwargs["clip_max_value_before_reduce"])
       # When we fetch a huge plot (say 6400m x 6400m) and a source is at very
       # high resolution (say 0.5m) and we use reduceResolutionTo* reducer,
       # EE would fail with "Reprojection output too large (12800x12800 pixels)".
@@ -350,7 +505,7 @@ def get_ic_reduce_fn(
     def reduce_resolution(im):
       if isinstance(im, ee.ImageCollection):
         im = im.map(rr)
-        im = im.mosaic()
+        im = get_ic_reduce_fn(kwargs.get("ic_reduce_fn", "mosaic"))(im)
       else:
         im = rr(im)
       return im
@@ -410,9 +565,47 @@ def ic_sample(
     limit: int | None = None,
     additional_properties: Sequence[str] = (),
     date_range: tuple[str, str] | None = None,
+    match_season_date: str | int | float | None = None,
+    match_season_window_days: int = 45,
+    temporal_anchor_ts: Any = None,
+    time_window_days: int | None = None,
 ) -> tuple[Sequence[ee.Image], dict[str, np.ndarray]]:
-  """Returns ROI samples for all filtered IC images."""
-  ic = _preprocess_ic(
+  """Stacks individual IC images across time (multi-temporal).
+
+  Returns one image per item in the ImageCollection (after filtering), producing
+  a multi-temporal stack. Each image is individually accessible with its own
+  timestamp metadata.
+
+  Args:
+    roi: Region of interest geometry.
+    ic: Input ImageCollection to sample from.
+    cloud_mask_fn: Optional cloud masking function applied to each image.
+    sort_by: Optional property name to sort the collection by.
+    ascending: Sort order (default: ascending).
+    bands: Optional band selection.
+    filter_bounds: Whether to filter the IC by ROI bounds.
+    roi_filter_fn: Optional custom ROI filtering function.
+    limit: Maximum number of images to return (most recent).
+    additional_properties: Extra properties to include in metadata.
+    date_range: Optional (start, end) date filter.
+    match_season_date: A date string, timestamp, or ee.Date to filter images
+      based on their day of year (DOY). Images are kept if their DOY is within
+      `match_season_window_days` of the `match_season_date`'s DOY.
+    match_season_window_days: The number of days around `match_season_date`'s
+      DOY to include in the filter. Defaults to 45.
+    temporal_anchor_ts: A timestamp in milliseconds. Used with
+      `time_window_days` to filter images within a temporal window.
+    time_window_days: The number of days before and after `temporal_anchor_ts`
+      to include in the filter. Images are kept if their timestamp is within
+      [`temporal_anchor_ts` - `time_window_days`, `temporal_anchor_ts` +
+      `time_window_days`].
+
+  Returns:
+    A sequence of ee.Image objects for the filtered and sorted images.
+    A dictionary of metadata, including 'timestamps' and any
+      `additional_properties`, as numpy arrays.
+  """
+  ic = preprocess_ic(
       roi,
       ic,
       cloud_mask_fn,
@@ -422,6 +615,10 @@ def ic_sample(
       filter_bounds,
       roi_filter_fn,
       date_range=date_range,
+      match_season_date=match_season_date,
+      match_season_window_days=match_season_window_days,
+      temporal_anchor_ts=temporal_anchor_ts,
+      time_window_days=time_window_days,
   )
   ims, metadata = [], collections.defaultdict(list)
   sorted_image_properties = fetch_image_collection_properties(
@@ -457,8 +654,30 @@ def ic_sample_reduced(
     date_range: tuple[str, str] | None = None,
     **reduce_fn_kwargs,
 ) -> ee.Image:
-  """Returns ROI samples reduced over the whole IC."""
-  ic = _preprocess_ic(
+  """Reduces an ImageCollection to a single composite image.
+
+  Applies a reducer (e.g. mosaic, mean, median) over all images in the
+  collection to produce a single composite.
+
+  Args:
+    roi: Region of interest geometry.
+    ic: Input ImageCollection.
+    scale: Spatial resolution in meters.
+    cloud_mask_fn: Optional cloud masking function.
+    sort_by: Optional sort property.
+    ascending: Sort order.
+    bands: Optional band selection.
+    filter_bounds: Whether to filter by ROI bounds.
+    roi_filter_fn: Optional custom ROI filter.
+    dummy_im: Fallback image if IC is empty.
+    reduce_fn: Reducer name (e.g. 'mosaic', 'mean', 'median').
+    date_range: Optional (start, end) date filter.
+    **reduce_fn_kwargs: Additional kwargs for the reducer.
+
+  Returns:
+    A single composite ee.Image.
+  """
+  ic = preprocess_ic(
       roi,
       ic,
       cloud_mask_fn,
@@ -470,10 +689,10 @@ def ic_sample_reduced(
       dummy_im,
       date_range=date_range,
   )
-  reduce_fn = get_ic_reduce_fn(
+  reduce_fn = get_ic_reduce_fn(  # pyrefly: ignore[bad-assignment]
       reduce_fn, scale=scale, roi=roi, **reduce_fn_kwargs
   )
-  return reduce_fn(ic)
+  return reduce_fn(ic)  # pyrefly: ignore[not-callable]
 
 
 def ic_sample_date_ranges(
@@ -487,40 +706,61 @@ def ic_sample_date_ranges(
     bands: list[str] | None = None,
     filter_bounds: bool = True,
     roi_filter_fn: Callable[..., ee.ImageCollection] | None = None,
-    date_ranges: tuple[str, int, int],
+    date_ranges: Sequence[tuple[str, int, int]],
     dummy_im: ee.Image | None = None,
     reduce_fn: str = "mosaic",
     limit: int | None = None,
     **reduce_fn_kwargs,
 ) -> tuple[Sequence[ee.Image], dict[str, np.ndarray]]:
-  """Returns ROI samples reduced over given date ranges."""
-  reduce_fn = get_ic_reduce_fn(
+  """Creates one composite image per date range window.
+
+  For each date range in ``date_ranges``, filters the IC to that time window
+  and applies the reducer to produce a composite. Returns a list of composite
+  images (one per date range) with their midpoint timestamps.
+
+  Args:
+    roi: Region of interest geometry.
+    ic: Input ImageCollection.
+    scale: Spatial resolution in meters.
+    cloud_mask_fn: Optional cloud masking function.
+    sort_by: Optional sort property.
+    ascending: Sort order.
+    bands: Optional band selection.
+    filter_bounds: Whether to filter by ROI bounds.
+    roi_filter_fn: Optional custom ROI filter.
+    date_ranges: Sequence of (start_date, months, days) tuples defining the
+      temporal windows.
+    dummy_im: Fallback image if IC is empty for a given window.
+    reduce_fn: Reducer name (e.g. 'mosaic', 'mean', 'median').
+    limit: Maximum images per window.
+    **reduce_fn_kwargs: Additional kwargs for the reducer.
+
+  Returns:
+    Tuple of (list of composite ee.Images, metadata dict with timestamps).
+  """
+  reduce_fn = get_ic_reduce_fn(  # pyrefly: ignore[bad-assignment]
       reduce_fn, scale=scale, roi=roi, **reduce_fn_kwargs
   )
-  ims, ts = [], []
-  for start, months, days in date_ranges:
-    start = datetime.datetime.strptime(start, r"%Y-%m-%d").replace(
-        tzinfo=datetime.timezone.utc  # Default EE timezone.
-    )
-    end = start + relativedelta.relativedelta(days=days, months=months)
-    ts.append(int(start.timestamp() + end.timestamp()) // 2 * 1000)
-
-    dates_range = start.strftime(r"%Y-%m-%d"), end.strftime(r"%Y-%m-%d")
-    ic_t = _preprocess_ic(
-        roi,
-        ic,
-        cloud_mask_fn,
-        sort_by,
-        ascending,
-        bands,
-        filter_bounds,
-        roi_filter_fn,
-        dummy_im,
-        dates_range,
-        limit=limit,
-    )
-    ims.append(reduce_fn(ic_t))
-  return ims, dict(timestamps=np.array(ts))
+  windows, timestamps = times.resolve_date_ranges(date_ranges)
+  ims = [
+      reduce_fn(  # pyrefly: ignore[not-callable]
+          preprocess_ic(
+              roi,
+              ic,
+              cloud_mask_fn,
+              sort_by,
+              ascending,
+              bands,
+              filter_bounds,
+              roi_filter_fn,
+              dummy_im,
+              dates_range,
+              limit=limit,
+          )
+      )
+      for dates_range in windows
+  ]
+  return ims, dict(timestamps=timestamps)
 
 
 def add_roi_validity(
@@ -534,7 +774,7 @@ def add_roi_validity(
   arr = ee.Array(sample).toFloat()
   mean = arr.reduce(ee.Reducer.mean(), [0, 1])
   mean = mean.get([0, 0])  # Returns scalar instead of (1, 1) array.
-  return im_orig.set({"validity": mean})
+  return im_orig.set({"validity": mean})  # pyrefly: ignore[bad-return]
 
 
 def add_abs_time_difference(im: ee.Image, ref_date: ee.Date) -> ee.Image:
@@ -542,4 +782,15 @@ def add_abs_time_difference(im: ee.Image, ref_date: ee.Date) -> ee.Image:
   abs_time_difference = (
       ee.Number(im.get("system:time_start")).subtract(ref_date.millis()).abs()
   )
-  return im.set("abs_time_difference", abs_time_difference)
+  return im.set("abs_time_difference", abs_time_difference)  # pyrefly: ignore[bad-return]
+
+
+# For backwards compatibility.
+ic_stack = ic_sample
+ic_reduced = ic_sample_reduced
+ic_temporal_composites = ic_sample_date_ranges
+im_from_item = get_image_from_item
+im_static = sample_roi
+fc_properties = fc_get
+fc_rasterize = fc_to_image
+ccdc_coefficients = get_ccdc

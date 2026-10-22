@@ -81,7 +81,7 @@ class CoordsTest(parameterized.TestCase):
         roi.utm_zone, 1, 1, 1,
         np.array([roi.utm_x_min]),
         np.array([roi.utm_y_min])).centroid_latlon
-    np.testing.assert_allclose((new_lat, new_lon), ([lat], [lon]), 1e-5, 1e-5)
+    np.testing.assert_allclose((new_lat, new_lon), ([lat], [lon]), 1e-5, 1e-5)  # pyrefly: ignore[no-matching-overload]
 
   def test_utm_grid_mapping_from_bbox_fails_for_latlon(self):
     bbox = (-77.49, 1.177, -77.12, 1.26)

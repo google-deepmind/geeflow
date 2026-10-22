@@ -40,7 +40,7 @@ def im_add_ccdc_bands_2d(ic, num_segments, im=None) -> ee.Image:
       )
       im_ji = im_ji.rename(im_ji.bandNames().map(rename_fn))
       im = im_ji if im is None else im.addBands(im_ji)
-  return im
+  return im  # pyrefly: ignore[bad-return]
 
 
 def im_add_ccdc_bands_1d(ic, num_segments, im=None) -> ee.Image:
@@ -53,7 +53,7 @@ def im_add_ccdc_bands_1d(ic, num_segments, im=None) -> ee.Image:
     )
     im_i = im_i.rename(im_i.bandNames().map(rename_fn))
     im = im_i if im is None else im.addBands(im_i)
-  return im
+  return im  # pyrefly: ignore[bad-return]
 
 
 def get_ccdc_pixels(

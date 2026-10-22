@@ -18,6 +18,9 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
+*   Fix OSS export: export all data sources modules, add raster export
+    utilities, resolve leakr links, and harden CI workflows.
+
 ## [0.1.0]
 
 * Initial release

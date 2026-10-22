@@ -186,7 +186,7 @@ def _get_utm_zones():
       all_files_no_utm_zone += gfile.Glob(path)
 
   for utm_zone in utm_zones:
-    if f"raster_{utm_zone}" in existing_assets:
+    if f"raster_{utm_zone}" in existing_assets:  # pyrefly: ignore[not-iterable]
       logging.info("UTM Zone %s already in EE, skipping.", utm_zone)
       continue
     if (
@@ -289,7 +289,7 @@ class IngestRastersPipeline(beam.PTransform):
     return pipeline
 
 
-  def main(argv):
+def main(argv):
   assert FLAGS.columns_to_export, "No columns to export specified."
   assert not (
       FLAGS.write_cogs and FLAGS.one_asset_per_utm_zone

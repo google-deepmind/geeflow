@@ -182,11 +182,13 @@ class CounterAccumulator(StatsAccumulator):
   """
   c: collections.Counter[Any] | None = None  # pylint: disable=g-bare-generic
   n_masked: int = 0
+  n_nan: int = 0
   numeric: bool = True  # Set to False if not counter over numbers.
   to_int: bool = True  # If float dtype, convert to int for bin counts.
 
   def merge(self, other):
     self.n_masked += other.n_masked
+    self.n_nan += other.n_nan
     if other.c:
       if self.c:
         self.c.update(other.c)
@@ -204,6 +206,10 @@ class CounterAccumulator(StatsAccumulator):
       x = x[flat_masks]
       self.n_masked += masked_values.size
     if self.numeric:
+      nan_mask = np.isnan(x)
+      if np.any(nan_mask):
+        self.n_nan += np.sum(nan_mask)
+        x = x[~nan_mask]
       super().add(x)
     else:
       self.n += x.size
@@ -216,6 +222,7 @@ class CounterAccumulator(StatsAccumulator):
   def clear(self):
     self.c = None
     self.n_masked = 0
+    self.n_nan = 0
     super().clear()
 
   def is_valid(self):
@@ -252,11 +259,11 @@ class CounterAccumulator(StatsAccumulator):
     return self.c.most_common(1)[0][0]
 
   def bins(self, min=None, max=None) -> list[int] | None:  # pylint: disable=redefined-builtin
-    min = min or int(self.min)
-    max = max or int(self.max)
+    min = min or int(self.min)  # pyrefly: ignore[bad-argument-type]
+    max = max or int(self.max)  # pyrefly: ignore[bad-argument-type]
     if max - min > MAX_NUM_BINS:
       return None
-    out = [self.c[j] for j in range(min, max+1)]
+    out = [self.c[j] for j in range(min, max+1)]  # pyrefly: ignore[unsupported-operation]
     if not out[0] or not out[-1]:  # min and/or max got masked out.
       idx = np.where(out)[0]
       out = out[idx.min(): idx.max()+1]
@@ -268,11 +275,11 @@ class CounterAccumulator(StatsAccumulator):
     # more element (len(x)==len(b)+1), denoting bin ranges.
     # Potentially we could adapt to it as well. For large quantities of numbers
     # and bins, this should be insignificant.
-    min = min or int(self.min)
-    max = max or int(self.max)
+    min = min or int(self.min)  # pyrefly: ignore[bad-argument-type]
+    max = max or int(self.max)  # pyrefly: ignore[bad-argument-type]
     if max - min > MAX_NUM_BINS:
       return None
-    out = [self.c[j] for j in range(min, max+1)]
+    out = [self.c[j] for j in range(min, max+1)]  # pyrefly: ignore[unsupported-operation]
     if not out[0] or not out[-1]:  # min and/or max got masked out.
       idx = np.where(out)[0]
       out = out[idx.min(): idx.max()+1]
@@ -284,7 +291,7 @@ class CounterAccumulator(StatsAccumulator):
   def bins_mean(self):
     """Returns mean computed from current bins data."""
     n, total = 0, 0
-    for bin_i, bin_count in self.c.items():
+    for bin_i, bin_count in self.c.items():  # pyrefly: ignore[missing-attribute]
       n += bin_count
       total += bin_i * bin_count
     return total / n
@@ -293,7 +300,7 @@ class CounterAccumulator(StatsAccumulator):
   def bins_std(self):
     """Returns std computed from current bins data."""
     n, total, sum2 = 0, 0, 0
-    for bin_i, bin_count in self.c.items():
+    for bin_i, bin_count in self.c.items():  # pyrefly: ignore[missing-attribute]
       n += bin_count
       total += bin_i * bin_count
       sum2 += (bin_i**2) * bin_count
@@ -398,7 +405,7 @@ class BandsAccumulator():
       self._setup(arr.shape[-1])
     if arr.shape[-1] != self.n_bands:
       raise ValueError(f"Band dim of {arr.shape} does not match {self.n_bands}")
-    for i, accumulator in enumerate(self.accs):
+    for i, accumulator in enumerate(self.accs):  # pyrefly: ignore[not-iterable]
       accumulator.add(arr[..., i], mask[..., i] if mask is not None else None)
 
   def __add__(self, arr):
@@ -406,16 +413,16 @@ class BandsAccumulator():
     return self
 
   def mask(self, values, recompute=False):
-    for accumulator in self.accs:
+    for accumulator in self.accs:  # pyrefly: ignore[not-iterable]
       accumulator.mask(values, recompute=recompute)
 
   def recompute(self):
-    for accumulator in self.accs:
+    for accumulator in self.accs:  # pyrefly: ignore[not-iterable]
       accumulator.recompute()
 
   def as_dict(self, drop_support=False):
     d = {}
-    for i, acc in enumerate(self.accs):
+    for i, acc in enumerate(self.accs):  # pyrefly: ignore[not-iterable]
       d[i] = acc.as_dict(drop_support=drop_support)
       if not d[i]:
         print(f"\nWARNING: no data for band {i}. Dropping it.")
@@ -443,7 +450,7 @@ def load_json(path, split_name=None, postfix=None, as_cd=False,
       d = json.load(f)
   else:
     full_path = utils.standardized_path(
-        path, split_name, postfix + BAND_PREFIX + "*", META_PATH
+        path, split_name, postfix + BAND_PREFIX + "*", META_PATH  # pyrefly: ignore[unsupported-operation]
     )
     d = {}
     for filename in gfile.Glob(full_path):

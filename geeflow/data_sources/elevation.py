@@ -39,9 +39,9 @@ class NasaDem(ee_base.EeData):
     # Elevation above geoid in meters, slope/aspect in deg [0..90], [0..360].
     return elevation.addBands(
         ee.Terrain.slope(elevation)
-    ).addBands(  # pytype: disable=attribute-error
+    ).addBands(
         ee.Terrain.aspect(elevation)
-    )  # pytype: disable=attribute-error
+    )
 
   @property
   def ic(self):
@@ -63,8 +63,8 @@ class FABDEM(ee_base.EeData):
     fabdem = ee.ImageCollection(self.asset_name)
     proj = fabdem.first().projection()
     elevation = fabdem.mosaic().setDefaultProjection(proj)
-    slope = ee.Terrain.slope(elevation).setDefaultProjection(proj)  # pytype: disable=attribute-error
-    aspect = ee.Terrain.aspect(elevation).setDefaultProjection(proj)  # pytype: disable=attribute-error
+    slope = ee.Terrain.slope(elevation).setDefaultProjection(proj)
+    aspect = ee.Terrain.aspect(elevation).setDefaultProjection(proj)
 
     res = ee.Image([elevation, slope, aspect])
     res = res.rename(["elevation", "slope", "aspect"])
@@ -100,9 +100,9 @@ class CopDem(ee_base.EeData):
     # Elevation above geoid in meters, slope/aspect in deg [0..90], [0..360].
     return elevation.addBands(
         ee.Terrain.slope(elevation)
-    ).addBands(  # pytype: disable=attribute-error
+    ).addBands(
         ee.Terrain.aspect(elevation)
-    )  # pytype: disable=attribute-error
+    )
 
   @property
   def ic(self):

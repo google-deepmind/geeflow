@@ -42,7 +42,12 @@ FLAGS = flags.FLAGS
 
 
 def convert_format(example):
-  yield jax.tree.map(utils.to_np, example)
+  try:
+    result = jax.tree.map(utils.to_np, example)
+  except Exception as e:
+    logging.exception("Failed to convert example: %s %s", example, e)
+    raise e
+  yield result
 
 
 def create_pipeline_for_split(split: str, root: beam.Pipeline) -> beam.Pipeline:

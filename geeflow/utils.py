@@ -123,7 +123,9 @@ def _copy(src: str, dst_dir: str) -> str:
   return dst
 
 
-def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
+def parse_arg(
+    arg: str | None, lazy: bool = False, log_parsed: bool = True, **spec
+) -> mlc.ConfigDict:
   """Makes ConfigDict's get_config single-string argument more usable.
 
   Example use in the config file:
@@ -154,6 +156,7 @@ def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
     arg: the string argument that's passed to get_config.
     lazy: allow lazy parsing of arguments, which are not in spec. For these, the
       type is auto-extracted in dependence of most complex possible type.
+    log_parsed: whether to log (and print to stdout) the parsed arguments.
     **spec: the name and default values of the expected options. If the value is
       a tuple, the value's first element is the default value, and the second
       element is a function called to convert the string. Otherwise the type is
@@ -199,7 +202,12 @@ def parse_arg(arg: str | None, lazy: bool = False, **spec) -> mlc.ConfigDict:
         result[k] = autotype(v)
     else:
       raise ValueError(f"Unhandled config args remain: {raw_kv}")
-
+  if log_parsed:
+    logging.info("Parsed config args:")
+    print("Parsed config args:")
+    for k, v in result.items():
+      logging.info("  %s: %s (%s)", k, v, type(v))
+      print(f"  {k}: {v} ({type(v)})")
   return result
 
 
